@@ -1,65 +1,183 @@
-# Vision Language Action (VLA) Concepts and Architecture
+# Vision-Language-Action (VLA) Architecture
 
-## 1. Core Principles of VLA
-A Vision Language Action (VLA) system connects three domains:
-* **Vision**: Perception from a camera or depth sensor
-* **Language**: Natural language understanding and parsing
-* **Action**: Robot control, path planning, and physical execution
+## 1. Core Principles
 
-The system maps a tuple of `(Image, Instruction)` to a `Robot Action`.
+A VLA system maps `(Image, Instruction) → Robot Action`. It connects three domains:
+- **Vision** — perceiving the world from camera/depth data
+- **Language** — understanding natural language commands
+- **Action** — planning and executing robot motion
 
-## 4. System Operation
+---
 
-### URDF and RViz Simulation Integration
-The system unifies the mobile platform and the UR3 arm into a single kinematics tree: `dummy_root` -> `chassis_link` -> Wheels/Sensors + `base_link` -> `flange` -> `gripper_joint` -> `robotiq`. 
+## 2. Pipeline Overview
 
-Crucial fixes for proper `robot_state_publisher` execution:
-* **Geometry Parsing**: Ensure the `ur_description` (arm) and `robotiq_visualization` (gripper) packages are fully built so `package://` locating works; absolute paths like `file:///` cause conflicts between machines.
-* **Xacro Syntax**: The root `<robot>` XML attribute must explicitly define `xmlns:xacro="http://www.ros.org/wiki/xacro"` rather than dictionary definitions, otherwise `urdf_parser_py` outright rejects the file under strict ROS 2 parameters (`Invalid robot_description`). 
-* **TF Broadcasting**: `robot_description` needs to be passed to *both* `robot_state_publisher` and `joint_state_publisher_gui` as a `ParameterValue(Command(['xacro ']))` object. Injecting an unparsed text block directly into a Python launch file node strips layout formatting and breaks the hierarchy.
-
-### Execution Phases
-
-To maintain reliability and extensibility in ROS 2, the system uses a modular pipeline instead of a monolithic end-to-end model. We have implemented this inside the `pickplace_rl_mobile` package:
-
-1. **Vision Node (`vla_vision_node.py`)**: Converts raw camera feeds into 3D object poses using OpenCV HSV color segmentation. It computes the centroid, merges depth data, and publishes `geometry_msgs/PoseStamped` objects, as well as a JSON string containing the global tracking states of known colored objects.
-2. **Language Parser Node (`vla_language_node.py`)**: Converts free-form text instructions (e.g., "Pick the blue cube") into structured JSON commands. We initially implemented this via Regex/Rule-based Natural Language Processing to make it deterministic without API dependencies.
-3. **Task Planner/Coordinator Node (`vla_coordinator_node.py`)**: Takes the structured intent from the Language Node and looks up coordinates from the Vision Node. It orchestrates the sequence of high-level actions by communicating with the Action Node.
-4. **Action Execution (`vla_action_node.py`)**: The low-level motion planning and controller execution in the Gazebo simulation utilizing MoveIt2 APIs.
-
-### Pipeline Flow
-```mermaid
-graph TD;
-    Camera[Camera Sensor] --> Perception[vla_vision_node];
-    Perception --> WorldState[World State JSON Publisher];
-    
-    Text[Language Instruction Topic] --> Parser[vla_language_node];
-    Parser --> Planner[vla_coordinator_node];
-    
-    WorldState --> Planner;
-    Perception --> Planner;
-    
-    Planner --> MoveIt[vla_action_node];
-    MoveIt --> Controller[Gazebo / Robot Controller];
+```
+User: "pick the blue cube and place it in the tray"
+          │
+          ▼
+┌──────────────────────┐
+│  vla_language_node   │  SmolLM2-360M-Instruct (+ regex fallback)
+│  /vla_instruction    │  Parses intent → structured JSON
+└──────────┬───────────┘
+           │ /vla/structured_command
+           ▼
+┌──────────────────────┐
+│  task_planner_node   │  Decomposes into atomic task queue
+│                      │  Supports: single, sort-all, clear, stack
+└──────────┬───────────┘
+           │ /vla/current_task
+           ▼
+┌──────────────────────┐     ┌───────────────────────┐
+│  vla_coordinator     │◄────│  object_memory_node   │
+│                      │     │  Persistent object map │
+│  Resolves pick/place │     │  30s occlusion decay  │
+│  poses & triggers    │     └───────────────────────┘
+│  action execution    │             ▲
+└──────────┬───────────┘             │ /vla/world_state
+           │ /vla/action_target      │
+           │ /execute_vla_sequence   │
+           ▼                         │
+┌──────────────────────┐     ┌───────┴───────────────┐
+│  vla_action_node     │     │  vla_vision_node       │
+│  MoveIt2 MoveGroup   │     │  OWLv2 (open-vocab)   │
+│  joint planning &    │     │  + HSV fallback        │
+│  gripper control     │     │  /vla/detected_object_ │
+└──────────────────────┘     │  pose + /vla/world_    │
+                             │  state                  │
+                             └───────────────────────-─┘
 ```
 
-### Hardware and Models Used
-- **Camera Configuration**: The Vision node relies on the `/camera/image_raw` and `/camera/depth` ROS 2 topics. In our Gazebo simulation, these are generated by an simulated depth camera perfectly matching the specs of an **Intel RealSense D435** RGB-D camera attached rigidly to the mobile base `chassis_link`.
-- **Mobile Manipulator Robot**: Instead of running navigation on one URDF and manipulation on another, we built a single unified model named `mobile_ur3.urdf`.
-    - It combines the differential drive wheels and LiDAR of the ground robot with the full 6-DOF kinematics of the UR3 arm.
-    - The `base_link` of the UR3 arm is rigidly attached to `chassis_link` via a fixed joint.
-    - The MoveIt2 `mobile_ur3.srdf` and kinematics engines are fully aware of the mobile cart boundaries beneath the arm, guaranteeing collision-free operation when reaching for objects.
+---
 
-## 3. Implemented Features
-We successfully built out all 4 phases of integration onto the Custom Mobile UR3 Manipulator:
-* **Phase 1**: Basic Pick and Place in Gazebo. Created the `vla_action_node.py` trigger interface.
-* **Phase 2**: Vision integration. Created `vla_vision_node.py` doing OpenCV pin-hole back-projection from camera frame.
-* **Phase 3**: Language parsing integration. Created `vla_language_node.py` transforming strings to target intent.
-* **Phase 4**: Full VLA Pipeline Orchestration. The `vla_coordinator_node.py` ties everything together. We created a singular `vla_full_pipeline.launch.py` to start them all up.
+## 3. Node Reference
 
-## 4. Why Modular Over End-To-End?
-While cutting-edge models (RT-1, RT-2) train giant multimodal transformers to emit action tokens directly, they require massive datasets, compute, and are hard to debug. A modular pipeline allows us to:
-* Individually verify perception accuracy using RViz.
-* Test language parsing without moving a physical robot.
-* Swap out classical CV for Deep Learning (YOLOv8) without changing the motion planner.
-* Maintain deterministic safety bounds through the `safety_guard` node.
+### `vla_language_node.py`
+- **Model:** `HuggingFaceTB/SmolLM2-360M-Instruct` (360M params, CPU-runnable)
+- **Fallback:** Regex + keyword matching
+- **Input:** `/vla_instruction` (raw text string)
+- **Output:** `/vla/structured_command` (JSON: action, color, object, destination, confidence, parser)
+- **Param:** `use_llm: true/false`
+
+Example output:
+```json
+{"action": "pick_and_place", "color": "blue", "object": "cube",
+ "destination": "tray", "confidence": 0.92, "parser": "smollm2"}
+```
+
+---
+
+### `vla_vision_node.py`
+- **Model:** `google/owlv2-base-patch16-finetuned` (open-vocabulary)
+- **Fallback:** HSV colour segmentation (red, blue, green, yellow, orange, purple)
+- **Input:** `/camera/image_raw`, `/camera/depth`, `/vla_track_object` (text query)
+- **Output:** `/vla/detected_object_pose` (PoseStamped), `/vla/world_state` (JSON)
+- **Param:** `use_owlv2: true/false`, `detection_threshold: 0.1`
+
+With OWLv2, the `/vla_track_object` topic accepts full text queries like `"blue coffee mug"` instead of just colour names.
+
+---
+
+### `task_planner_node.py` *(new)*
+- **Input:** `/vla/structured_command`, `/vla/world_state`, `/vla/task_feedback`
+- **Output:** `/vla/current_task` (dispatched at 2Hz), `/vla/task_queue`, `/vla/planner_status`
+
+Supported decomposition patterns:
+
+| Instruction pattern | Behaviour |
+|---------------------|-----------|
+| `"pick X and place in Y"` | Single task |
+| `"sort all objects"` | One task per detected colour → colour-matched bin |
+| `"clear all objects"` | Move all detected objects to default tray |
+| `"stack all blocks"` | Stack them at centre with increasing Z |
+
+---
+
+### `object_memory_node.py` *(new)*
+- **Input:** `/vla/world_state`
+- **Output:** `/vla/object_map` (full timestamped map), `/vla/object_summary`
+- **Service:** `/vla/query_object_map` (Trigger → returns JSON map)
+- **Param:** `decay_seconds: 30.0` — objects not seen for 30s are evicted
+
+Keeps last-known positions for objects temporarily occluded by the robot arm.
+
+---
+
+### `vla_coordinator_node.py`
+- **Input:** `/vla/current_task`, `/vla/object_map`, `/vla/detected_object_pose`
+- **Output:** `/vla/action_target` (pick+place poses JSON), `/vla/task_feedback`
+- **Service client:** `/execute_vla_sequence`
+
+Resolution priority for pick pose:
+1. Object memory (exact colour match)
+2. Object memory (partial label match)
+3. Live tracked pose from vision node
+
+---
+
+### `vla_action_node.py`
+- **MoveIt2:** `moveit_msgs/action/MoveGroup` action client
+- **Fallback:** Gripper velocity commands via `/left_finger_joint/cmd_vel` etc.
+- **Input:** `/vla/action_target` (JSON), `/joint_states`
+- **Service:** `/execute_vla_sequence` (Trigger)
+
+Execution sequence: ready → open gripper → pre-pick → grasp → lift → carry → lower → release → home
+
+---
+
+## 4. Launch
+
+```bash
+# Full pipeline (with ML models)
+ros2 launch pickplace_rl_mobile vla_full_pipeline.launch.py
+
+# Disable ML models (regex + HSV only, no GPU/download needed)
+ros2 launch pickplace_rl_mobile vla_full_pipeline.launch.py use_llm:=false use_owlv2:=false
+
+# Send a command
+ros2 topic pub /vla_instruction std_msgs/String "data: 'pick the blue cube and place in tray'"
+
+# Multi-step: sort all
+ros2 topic pub /vla_instruction std_msgs/String "data: 'sort all objects by colour'"
+
+# Monitor pipeline
+ros2 topic echo /vla/planner_status
+ros2 topic echo /vla/object_map
+```
+
+---
+
+## 5. ML Model Setup
+
+```bash
+pip install transformers torch pillow
+
+# Pre-download models (optional, avoids first-run delay)
+python3 -c "
+from transformers import AutoTokenizer, AutoModelForCausalLM
+AutoTokenizer.from_pretrained('HuggingFaceTB/SmolLM2-360M-Instruct')
+AutoModelForCausalLM.from_pretrained('HuggingFaceTB/SmolLM2-360M-Instruct')
+"
+
+python3 -c "
+from transformers import Owlv2Processor, Owlv2ForObjectDetection
+Owlv2Processor.from_pretrained('google/owlv2-base-patch16-finetuned')
+Owlv2ForObjectDetection.from_pretrained('google/owlv2-base-patch16-finetuned')
+"
+```
+
+Model sizes:
+- SmolLM2-360M-Instruct: ~700 MB
+- OWLv2-base-patch16: ~590 MB
+
+---
+
+## 6. Why Modular Over End-to-End?
+
+End-to-end models (RT-2, OpenVLA 7B) require massive GPU, datasets, and are hard to debug.
+A modular pipeline gives:
+
+- Individual subsystem testing without moving hardware
+- Swappable backends (regex → SmolLM2, HSV → OWLv2 → YOLOv8)
+- Deterministic safety bounds via `safety_guard`
+- CPU-runnable on Jetson or embedded hardware
+- Interpretable intermediate representations for debugging
