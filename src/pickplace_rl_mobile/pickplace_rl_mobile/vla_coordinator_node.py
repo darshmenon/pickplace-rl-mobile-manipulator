@@ -97,9 +97,9 @@ class VLACoordinatorNode(Node):
             f'Place=({place_xyz["x"]:.3f},{place_xyz["y"]:.3f},{place_xyz["z"]:.3f})'
         )
 
-        # Call action node
-        if not self._action_client.wait_for_service(timeout_sec=2.0):
-            self.get_logger().error('[Coordinator] Action service unavailable.')
+        # Call action node (non-blocking service check to avoid holding up spin)
+        if not self._action_client.service_is_ready():
+            self.get_logger().error('[Coordinator] Action service not ready.')
             self._publish_feedback('failed')
             return
 

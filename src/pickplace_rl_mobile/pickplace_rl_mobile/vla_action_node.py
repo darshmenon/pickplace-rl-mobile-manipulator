@@ -1,14 +1,19 @@
 #!/usr/bin/env python3
 """
 VLA Phase 1 - Action Node
-Upgraded: MoveIt2 MoveGroup action client for real motion planning.
-Falls back to gripper velocity commands if MoveIt2 is unavailable.
+MoveIt2 MoveGroup action client for real motion planning.
+Falls back to gripper velocity commands when MoveIt2 is unavailable.
+
+Design note: all MoveIt2 calls happen in a separate thread to avoid
+blocking the ROS2 spin loop (critical for ReentrantCallbackGroup nodes).
 """
 
 import time
 import json
+import threading
 import rclpy
 from rclpy.node import Node
+from rclpy.executors import MultiThreadedExecutor
 from rclpy.callback_groups import ReentrantCallbackGroup
 from geometry_msgs.msg import PoseStamped
 from std_msgs.msg import Float64, String
@@ -18,9 +23,7 @@ from sensor_msgs.msg import JointState
 try:
     from rclpy.action import ActionClient
     from moveit_msgs.action import MoveGroup
-    from moveit_msgs.msg import (
-        Constraints, JointConstraint, MoveItErrorCodes,
-    )
+    from moveit_msgs.msg import Constraints, JointConstraint, MoveItErrorCodes
     MOVEIT_AVAILABLE = True
 except ImportError:
     MOVEIT_AVAILABLE = False
@@ -45,6 +48,7 @@ class VLAActionNode(Node):
         self.joint_positions: dict = {}
         self.pick_pose: PoseStamped | None  = None
         self.place_pose: PoseStamped | None = None
+        self._exec_lock = threading.Lock()  # prevent concurrent sequences
 
         self.create_subscription(JointState, '/joint_states', self._joint_cb, 10)
         self.create_subscription(String, '/vla/action_target', self._target_cb, 10,
@@ -60,6 +64,7 @@ class VLAActionNode(Node):
             )
             self.get_logger().info('MoveIt2 MoveGroup client created.')
         else:
+            self._move_client = None
             self.get_logger().warn('moveit_msgs not found — velocity fallback active.')
 
         self.srv = self.create_service(
@@ -79,7 +84,7 @@ class VLAActionNode(Node):
         except Exception as e:
             self.get_logger().error(f'Bad action_target JSON: {e}')
             return
-        for key, attr in (('pick_pose', 'pick_pose'), ('place_pose', 'place_pose')):
+        for key in ('pick_pose', 'place_pose'):
             if key in data:
                 p  = data[key]
                 ps = PoseStamped()
@@ -88,63 +93,87 @@ class VLAActionNode(Node):
                 ps.pose.position.y    = float(p['y'])
                 ps.pose.position.z    = float(p['z'])
                 ps.pose.orientation.w = 1.0
-                setattr(self, attr, ps)
+                setattr(self, key, ps)
 
     # ------------------------------------------------------------------
     def _execute_cb(self, request, response):
-        self.get_logger().info('VLA action sequence triggered.')
-        if MOVEIT_AVAILABLE and self._move_client.server_is_ready():
-            ok = self._execute_moveit()
-        else:
-            ok = self._execute_fallback()
-        response.success = ok
-        response.message = 'Task completed.' if ok else 'Task failed.'
+        if not self._exec_lock.acquire(blocking=False):
+            response.success = False
+            response.message = 'Already executing a sequence.'
+            return response
+
+        try:
+            self.get_logger().info('VLA action sequence triggered.')
+            if MOVEIT_AVAILABLE and self._move_client is not None \
+                    and self._move_client.server_is_ready():
+                ok = self._execute_moveit()
+            else:
+                ok = self._execute_fallback()
+            response.success = ok
+            response.message = 'Task completed.' if ok else 'Task failed.'
+        finally:
+            self._exec_lock.release()
+
         return response
 
     # ------------------------------------------------------------------
     def _move_to_joints(self, config: list[float]) -> bool:
-        if not MOVEIT_AVAILABLE:
+        """Plan and execute joint-space goal via MoveIt2 (blocking, call from non-spin thread)."""
+        if not MOVEIT_AVAILABLE or self._move_client is None:
             return False
+
         goal = MoveGroup.Goal()
-        goal.request.group_name                    = PLANNING_GROUP
-        goal.request.num_planning_attempts         = 5
-        goal.request.allowed_planning_time         = 5.0
-        goal.request.max_velocity_scaling_factor   = 0.3
+        goal.request.group_name                      = PLANNING_GROUP
+        goal.request.num_planning_attempts           = 5
+        goal.request.allowed_planning_time           = 5.0
+        goal.request.max_velocity_scaling_factor     = 0.3
         goal.request.max_acceleration_scaling_factor = 0.3
 
         jcs = []
         for name, pos in zip(ARM_JOINTS, config):
             jc = JointConstraint()
-            jc.joint_name       = name
-            jc.position         = pos
-            jc.tolerance_above  = 0.05
-            jc.tolerance_below  = 0.05
-            jc.weight           = 1.0
+            jc.joint_name      = name
+            jc.position        = pos
+            jc.tolerance_above = 0.05
+            jc.tolerance_below = 0.05
+            jc.weight          = 1.0
             jcs.append(jc)
         c = Constraints()
-        c.joint_constraints = jcs
+        c.joint_constraints        = jcs
         goal.request.goal_constraints = [c]
 
-        future = self._move_client.send_goal_async(goal)
-        rclpy.spin_until_future_complete(self, future, timeout_sec=10.0)
-        if not future.result() or not future.result().accepted:
-            return False
-        result_future = future.result().get_result_async()
-        rclpy.spin_until_future_complete(self, result_future, timeout_sec=15.0)
-        if result_future.result():
-            return result_future.result().result.error_code.val == MoveItErrorCodes.SUCCESS
-        return False
+        # Use threading.Event to bridge async ROS2 callbacks to blocking call
+        done_event  = threading.Event()
+        result_box  = [False]
+
+        def goal_response_cb(future):
+            gh = future.result()
+            if not gh or not gh.accepted:
+                done_event.set()
+                return
+            gh.get_result_async().add_done_callback(result_cb)
+
+        def result_cb(future):
+            try:
+                r = future.result()
+                result_box[0] = (r.result.error_code.val == MoveItErrorCodes.SUCCESS)
+            except Exception:
+                pass
+            done_event.set()
+
+        self._move_client.send_goal_async(goal).add_done_callback(goal_response_cb)
+        done_event.wait(timeout=20.0)
+        return result_box[0]
 
     def _set_gripper(self, open_: bool, duration: float = GRIPPER_DURATION):
         vel   = GRIPPER_VEL if open_ else -GRIPPER_VEL
-        start = self.get_clock().now()
-        rate  = self.create_rate(20)
-        while (self.get_clock().now() - start).nanoseconds < duration * 1e9:
+        start = time.monotonic()
+        while time.monotonic() - start < duration:
             for pub in self._gripper_pubs.values():
                 msg      = Float64()
                 msg.data = vel
                 pub.publish(msg)
-            rate.sleep()
+            time.sleep(0.05)
         for pub in self._gripper_pubs.values():
             msg      = Float64()
             msg.data = 0.0
@@ -160,18 +189,19 @@ class VLAActionNode(Node):
 
         if self.pick_pose:
             self.get_logger().info(
-                f"→ Pre-pick at z+0.15 above "
+                f"→ Pre-pick above "
                 f"({self.pick_pose.pose.position.x:.3f}, "
                 f"{self.pick_pose.pose.position.y:.3f}, "
                 f"{self.pick_pose.pose.position.z:.3f})"
             )
-            time.sleep(1.0)  # Pose-IK planned via MoveIt when TF frame resolved
+            time.sleep(1.0)
 
         self.get_logger().info('→ Closing gripper (grasp)...')
         self._set_gripper(open_=False, duration=GRIPPER_DURATION)
 
         self.get_logger().info('→ Lifting...')
-        lifted = [READY_CONFIG[i] + (0.1 if i == 1 else 0.0) for i in range(len(READY_CONFIG))]
+        lifted = READY_CONFIG[:]
+        lifted[1] = READY_CONFIG[1] + 0.15
         self._move_to_joints(lifted)
 
         if self.place_pose:
@@ -191,8 +221,6 @@ class VLAActionNode(Node):
 
     def _execute_fallback(self) -> bool:
         self.get_logger().warn('MoveIt2 unavailable — velocity fallback.')
-        time.sleep(1.0)
-        self.get_logger().info('Pre-grasp approach...')
         self._set_gripper(open_=True, duration=1.0)
         time.sleep(1.0)
         self.get_logger().info('Grasping...')
@@ -206,9 +234,13 @@ class VLAActionNode(Node):
 def main(args=None):
     rclpy.init(args=args)
     node = VLAActionNode()
-    rclpy.spin(node)
-    node.destroy_node()
-    rclpy.shutdown()
+    executor = MultiThreadedExecutor()
+    executor.add_node(node)
+    try:
+        executor.spin()
+    finally:
+        node.destroy_node()
+        rclpy.shutdown()
 
 
 if __name__ == '__main__':

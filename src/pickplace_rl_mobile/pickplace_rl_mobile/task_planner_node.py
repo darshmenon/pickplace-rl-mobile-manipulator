@@ -114,7 +114,9 @@ class TaskPlannerNode(Node):
         self.queue_pub  = self.create_publisher(String, '/vla/task_queue',     10)
         self.status_pub = self.create_publisher(String, '/vla/planner_status', 10)
 
-        self.create_timer(0.5, self._dispatch)
+        # Retry timer: re-send current task if coordinator hasn't acknowledged yet
+        # Uses a long interval (2s) to avoid flooding — the coordinator deduplicates
+        self.create_timer(2.0, self._dispatch)
         self.get_logger().info(
             'Task Planner ready. Supports: single, sort-all, clear-all, stack.'
         )

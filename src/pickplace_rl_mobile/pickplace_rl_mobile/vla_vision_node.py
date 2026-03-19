@@ -61,7 +61,8 @@ def _detect_owlv2(rgb_image: np.ndarray, queries: list[str], threshold: float = 
         with torch.no_grad():
             outputs = _owlv2_model(**inputs)
         target_sizes = torch.tensor([pil_img.size[::-1]])
-        results = _owlv2_processor.post_process_grounded_object_detection(
+        # post_process_object_detection is the stable API across transformers versions
+        results = _owlv2_processor.post_process_object_detection(
             outputs=outputs, target_sizes=target_sizes, threshold=threshold
         )[0]
         detections = []
