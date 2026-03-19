@@ -115,7 +115,15 @@ The robot is described in a single URDF file (`pickplace_mobile_arm.urdf`) and c
 - Parallel gripper with prismatic fingers for grasping
 - RGB-D camera and 2D LiDAR for perception
 
-### 2. Reinforcement Learning
+### 2. VLA Pipeline (Vision-Language-Action)
+- **Language**: SmolLM2-360M-Instruct (on-device, ~700 MB) parses natural language into structured JSON — regex fallback requires zero extra dependencies
+- **Vision**: OWLv2 base-patch16 (~590 MB) for open-vocabulary object detection; HSV colour segmentation fallback
+- **Object Memory**: Persistent timestamped object map with 30 s occlusion decay
+- **Task Planning**: Decomposes `sort-all`, `clear-all`, `stack`, and single pick-and-place goals automatically
+- **MoveIt2 Action Node**: Cartesian/joint-space motion planning with velocity fallback
+- Six independently testable nodes — run the full pipeline or just language/vision during development
+
+### 3. Reinforcement Learning
 - **Algorithm**: SAC (Soft Actor-Critic) for continuous control
 - **Environment**: Custom Gymnasium environment with ROS 2 integration
 - **Observation Space**: Joint positions, end-effector position, object position, grasp state, and current state-machine phase (0-5)
@@ -128,10 +136,16 @@ The robot is described in a single URDF file (`pickplace_mobile_arm.urdf`) and c
   - Heavy collision penalty: end episodes immediately with massive penalty if reaching too low
   - Smoothness penalty: encourages smooth motions
 
-### 3. Simulation
+### 4. Autonomous Navigation
+- Nav2 AMCL + DWB controller for map-based localisation and path planning
+- Frontier-based SLAM-aware exploration
+- `navigate_and_pick_node` integrates Nav2 goals with VLA pick-and-place execution
+
+### 5. Simulation
 - **Gazebo Harmonic**: Full physics simulation
 - **World**: Custom environment with object bin and target zone
 - **Plugins**: Differential drive controller, camera sensor, depth camera, LiDAR, joint state publisher
+- **Domain Randomisation**: Object position, colour, and physics noise for sim-to-real transfer
 - **Pickable Objects**: Dynamic cubes for pick-and-place tasks
 
 ---
@@ -140,6 +154,7 @@ The robot is described in a single URDF file (`pickplace_mobile_arm.urdf`) and c
 
 ```
 pickplace-rl-mobile-manipulator/
+├── docs/                            # Architecture and concept docs
 ├── images/                          # Screenshots and media
 ├── rl_models/                       # Saved RL model checkpoints
 ├── rviz/                            # RViz configuration files
@@ -148,12 +163,23 @@ pickplace-rl-mobile-manipulator/
 │   │   ├── training_config.yaml     # RL hyperparameters
 │   │   └── nav2_params.yaml         # Nav2 navigation config
 │   ├── launch/
-│   │   ├── display_launch.py        # RViz visualization
+│   │   ├── full_system.launch.py    # Full system (Gazebo + all nodes)
+│   │   ├── vla_full_pipeline.launch.py  # All 6 VLA nodes
+│   │   ├── vla_phase1.launch.py     # Vision + language only
 │   │   ├── gazebo_launch.py         # Gazebo-only simulation
-│   │   ├── full_system.launch.py    # Full system launch
+│   │   ├── gazebo.launch.py         # Minimal Gazebo
+│   │   ├── display_launch.py        # RViz visualization
+│   │   ├── rl_train.launch.py       # RL training
 │   │   └── standalone_rl_training.launch.py
 │   ├── pickplace_rl_mobile/
-│   │   ├── perception_node.py       # RGB-D object detection
+│   │   ├── vla_language_node.py     # Text → JSON (SmolLM2 / regex)
+│   │   ├── vla_vision_node.py       # Camera → object poses (OWLv2 / HSV)
+│   │   ├── vla_coordinator_node.py  # Resolves poses, drives execution
+│   │   ├── vla_action_node.py       # MoveIt2 motion planning + gripper
+│   │   ├── object_memory_node.py    # Persistent object map with decay
+│   │   ├── task_planner_node.py     # Multi-step task decomposition
+│   │   ├── navigate_and_pick_node.py # Nav2-integrated pick-and-place
+│   │   ├── perception_node.py       # RGB-D object detection (legacy)
 │   │   ├── safety_guard.py          # Safety monitoring + e-stop
 │   │   ├── manip_rl_node.py         # RL policy inference node
 │   │   ├── domain_randomizer.py     # Sim-to-real randomization
@@ -168,7 +194,7 @@ pickplace-rl-mobile-manipulator/
 │   │   └── pickplace_world.world
 │   ├── setup.py
 │   └── package.xml
-└── README.md
+└── readme.md
 ```
 
 ---
@@ -235,6 +261,21 @@ source install/setup.bash
 ros2 launch pickplace_rl_mobile full_system.launch.py
 ```
 
+### VLA Pipeline
+```bash
+# All 6 VLA nodes
+ros2 launch pickplace_rl_mobile vla_full_pipeline.launch.py
+
+# Without ML models (zero extra dependencies)
+ros2 launch pickplace_rl_mobile vla_full_pipeline.launch.py use_llm:=false use_owlv2:=false
+
+# Send a natural language command
+ros2 topic pub /vla_instruction std_msgs/String "data: 'pick the blue cube and place in tray'"
+
+# Multi-step task
+ros2 topic pub /vla_instruction std_msgs/String "data: 'sort all objects by colour'"
+```
+
 ### With Nav2 Navigation
 ```bash
 ros2 launch pickplace_rl_mobile full_system.launch.py use_nav2:=true
@@ -256,6 +297,29 @@ View the robot model interactively:
 source install/setup.bash
 ros2 launch pickplace_rl_mobile display_launch.py
 ```
+
+---
+
+## VLA Pipeline
+
+```
+User text  →  SmolLM2 (language)  →  Task Planner  →  Coordinator
+                                                           ↑
+Camera     →  OWLv2 (vision)      →  Object Memory  ──────┘
+                                                           ↓
+                                                    MoveIt2 Action Node
+```
+
+Six nodes, each independently testable:
+
+| Node | Topic/Service | Purpose |
+|------|---------------|---------|
+| `vla_language_node` | `/vla_instruction` → `/vla/structured_command` | Text → structured JSON (SmolLM2 / regex) |
+| `vla_vision_node` | `/camera/image_raw` → `/perception/detected_object` | Camera → object poses (OWLv2 / HSV) |
+| `object_memory_node` | `/perception/detected_object` → `/object_memory/query` | Persistent object map with 30 s decay |
+| `task_planner_node` | `/vla/structured_command` → `/task_planner/next_action` | Multi-step task decomposition |
+| `vla_coordinator_node` | Orchestrates language + memory + planning | Resolves poses and drives execution |
+| `vla_action_node` | MoveIt2 `MoveGroup` action + `/gripper/cmd` | Cartesian motion planning + gripper |
 
 ---
 
@@ -401,12 +465,12 @@ Edit `worlds/pickplace_world.world`:
 - [x] Safety guard with emergency stop
 - [x] Nav2 navigation stack integration
 - [x] Domain randomization for sim-to-real
+- [x] VLA pipeline — open-vocabulary pick and place (SmolLM2 + OWLv2)
+- [x] Natural language commanding (`/vla_instruction` topic)
+- [x] Multi-step task planning (sort-all, clear-all, stack)
+- [x] MoveIt2 integration for motion planning
 - [ ] Real robot deployment (Jetson + RealSense + ARES)
-- [ ] Multi-object sorting with color classification
-- [ ] VLA (Vision-Language-Action) model integration for open-vocabulary pick and place
-- [ ] Natural language commanding through audio/text interface
 - [ ] Dynamic obstacle avoidance using RL
-- [ ] MoveIt2 integration for motion planning
 - [ ] Sim-to-real transfer validation
 
 ---
