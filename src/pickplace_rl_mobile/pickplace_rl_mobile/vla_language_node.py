@@ -17,9 +17,8 @@ COLORS  = ['red', 'blue', 'green', 'yellow', 'orange', 'white', 'black', 'purple
 OBJECTS = ['cube', 'box', 'ball', 'cylinder', 'block', 'object', 'item', 'bottle', 'cup', 'mug']
 PLACES  = ['tray', 'bin', 'basket', 'table', 'shelf', 'box', 'container', 'drop zone', 'left', 'right']
 
-_model = None
-_tokenizer = None
-_USE_LLM = False
+# Mutable container avoids global-reassignment false positives from static analysers
+_LLM: dict = {'model': None, 'tokenizer': None, 'active': False}
 
 _SYSTEM_PROMPT = (
     "You are a robotics instruction parser. "
@@ -30,19 +29,18 @@ _SYSTEM_PROMPT = (
 
 
 def _load_model() -> bool:
-    global _model, _tokenizer, _USE_LLM
     try:
         from transformers import AutoModelForCausalLM, AutoTokenizer
         import torch
         model_id = 'HuggingFaceTB/SmolLM2-360M-Instruct'
-        _tokenizer = AutoTokenizer.from_pretrained(model_id)
-        _model = AutoModelForCausalLM.from_pretrained(
+        _LLM['tokenizer'] = AutoTokenizer.from_pretrained(model_id)
+        _LLM['model'] = AutoModelForCausalLM.from_pretrained(
             model_id,
             torch_dtype=torch.float32,
             device_map='cpu',
         )
-        _model.eval()
-        _USE_LLM = True
+        _LLM['model'].eval()
+        _LLM['active'] = True
         return True
     except Exception:
         return False
@@ -154,7 +152,7 @@ class VLALanguageNode(Node):
         out.data = json.dumps(result)
         self.cmd_pub.publish(out)
 
-    def _parse_cb(self, request, response):
+    def _parse_cb(self, _, response):
         if self.last_text:
             result = parse_instruction(self.last_text)
             response.success = True

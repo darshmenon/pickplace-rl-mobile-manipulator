@@ -217,6 +217,8 @@ class ManipRLNode(Node):
             return
 
         if not self.model_loaded:
+            # Demo mode: command zero velocities so the arm returns to rest
+            self.publish_action(np.zeros(8))
             return
 
         if self.use_perception and not self.perception_received:
