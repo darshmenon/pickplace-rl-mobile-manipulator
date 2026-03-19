@@ -47,6 +47,8 @@ setup(
             'vla_vision_node = pickplace_rl_mobile.vla_vision_node:main',
             'vla_language_node = pickplace_rl_mobile.vla_language_node:main',
             'vla_coordinator_node = pickplace_rl_mobile.vla_coordinator_node:main',
+            'task_planner_node   = pickplace_rl_mobile.task_planner_node:main',
+            'object_memory_node  = pickplace_rl_mobile.object_memory_node:main',
         ],
     },
 )

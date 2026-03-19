@@ -1,11 +1,17 @@
 #!/usr/bin/env python3
 """
 VLA Phase 4 - Coordinator Node
-Orchestrates the full VLA pipeline:
-  1. Listens to /vla_instruction (raw text)
-  2. Calls the language node for a structured command
-  3. Looks up the target object pose from the vision node
-  4. Calls the action node to execute the pick-and-place
+Orchestrates the full pipeline:
+  Language → Task Planner → Object Memory → Action Node → Feedback loop
+
+Topic interfaces
+----------------
+Sub: /vla/current_task         (String JSON)  — current atomic task from task planner
+Sub: /vla/object_map           (String JSON)  — persistent object memory
+Sub: /vla/detected_object_pose (PoseStamped)  — live tracked pose from vision node
+Pub: /vla/action_target        (String JSON)  — pick/place poses for action node
+Pub: /vla/task_feedback        (String JSON)  — completion status back to task planner
+Srv: /execute_vla_sequence     (Trigger)      — triggers action node execution
 """
 
 import json
@@ -20,82 +26,126 @@ class VLACoordinatorNode(Node):
     def __init__(self):
         super().__init__('vla_coordinator_node')
 
-        # Track latest info from sub-nodes
-        self.world_state: dict = {}
-        self.latest_cmd: dict  = {}
-        self.latest_object_pose: PoseStamped | None = None
+        self._object_map:   dict             = {}
+        self._current_task: dict             = {}
+        self._live_pose:    PoseStamped|None = None
 
         # Subscriptions
-        self.create_subscription(String, '/vla/world_state',        self.world_state_cb,   10)
-        self.create_subscription(String, '/vla/structured_command', self.structured_cmd_cb, 10)
-        self.create_subscription(
-            PoseStamped, '/vla/detected_object_pose', self.pose_cb, 10
+        self.create_subscription(String,      '/vla/current_task',         self._task_cb,  10)
+        self.create_subscription(String,      '/vla/object_map',           self._map_cb,   10)
+        self.create_subscription(PoseStamped, '/vla/detected_object_pose', self._pose_cb,  10)
+
+        # Publishers
+        self._target_pub   = self.create_publisher(String, '/vla/action_target',   10)
+        self._feedback_pub = self.create_publisher(String, '/vla/task_feedback',   10)
+
+        # Service client to execute action
+        self._action_client = self.create_client(Trigger, '/execute_vla_sequence')
+
+        self.get_logger().info(
+            'VLA Coordinator ready.\n'
+            '  Input:  ros2 topic pub /vla_instruction std_msgs/String "data: \'pick blue cube\'"'
         )
 
-        # Service clients
-        self.action_client   = self.create_client(Trigger, '/execute_vla_sequence')
-        self.language_client = self.create_client(Trigger, '/vla/parse_instruction')
-
-        self.get_logger().info("VLA Coordinator ready. Orchestrating vision→language→action pipeline.")
-        self.get_logger().info("Send a command: ros2 topic pub /vla_instruction std_msgs/String \"data: 'pick blue cube'\"")
-
-    def world_state_cb(self, msg: String):
+    # ------------------------------------------------------------------
+    def _map_cb(self, msg: String):
         try:
-            self.world_state = json.loads(msg.data)
+            self._object_map = json.loads(msg.data)
         except Exception:
             pass
 
-    def pose_cb(self, msg: PoseStamped):
-        self.latest_object_pose = msg
+    def _pose_cb(self, msg: PoseStamped):
+        self._live_pose = msg
 
-    def structured_cmd_cb(self, msg: String):
-        """Called whenever the language node emits a parsed command. Trigger execution."""
+    def _task_cb(self, msg: String):
         try:
-            self.latest_cmd = json.loads(msg.data)
+            task = json.loads(msg.data)
         except Exception:
             return
 
-        action = self.latest_cmd.get('action', 'unknown')
-        color  = self.latest_cmd.get('color', 'unknown')
-        dest   = self.latest_cmd.get('destination', 'tray')
+        # Ignore duplicate dispatches of the same task
+        if task == self._current_task:
+            return
+        self._current_task = task
+
+        color = task.get('color')
+        dest  = task.get('destination', 'tray')
+        action = task.get('action', 'pick_and_place')
 
         self.get_logger().info(
-            f"[Coordinator] Action={action} | Target={color} object | Destination={dest}"
+            f'[Coordinator] Task received: action={action} color={color} dest={dest}'
         )
 
-        # Check if world state has the target
-        if color and color in self.world_state:
-            pos = self.world_state[color]
-            self.get_logger().info(
-                f"[Coordinator] Object found at x={pos['x']:.3f} y={pos['y']:.3f} z={pos['z']:.3f}"
+        # Resolve pick pose from object memory or live tracked pose
+        pick_xyz = self._resolve_object(color)
+        if pick_xyz is None:
+            self.get_logger().warn(
+                f'[Coordinator] Object "{color}" not in memory or vision. Waiting...'
             )
-        elif self.latest_object_pose:
-            p = self.latest_object_pose.pose.position
-            self.get_logger().info(
-                f"[Coordinator] Using tracked pose: x={p.x:.3f} y={p.y:.3f} z={p.z:.3f}"
-            )
-        else:
-            self.get_logger().warn("[Coordinator] Object not yet detected. Waiting for vision node...")
             return
 
-        # Execute via action node
-        if not self.action_client.wait_for_service(timeout_sec=2.0):
-            self.get_logger().error("[Coordinator] vla_action_node service unavailable.")
+        # Resolve place pose from task
+        place_xyz = task.get('place_xyz', {'x': 0.6, 'y': 0.0, 'z': 0.1, 'frame': 'base_link'})
+
+        # Publish poses to action node
+        target_msg      = String()
+        target_msg.data = json.dumps({'pick_pose': pick_xyz, 'place_pose': place_xyz})
+        self._target_pub.publish(target_msg)
+
+        self.get_logger().info(
+            f'[Coordinator] Pick=({pick_xyz["x"]:.3f},{pick_xyz["y"]:.3f},{pick_xyz["z"]:.3f}) '
+            f'Place=({place_xyz["x"]:.3f},{place_xyz["y"]:.3f},{place_xyz["z"]:.3f})'
+        )
+
+        # Call action node
+        if not self._action_client.wait_for_service(timeout_sec=2.0):
+            self.get_logger().error('[Coordinator] Action service unavailable.')
+            self._publish_feedback('failed')
             return
 
-        req = Trigger.Request()
-        future = self.action_client.call_async(req)
-        future.add_done_callback(self.action_result_cb)
+        req    = Trigger.Request()
+        future = self._action_client.call_async(req)
+        future.add_done_callback(self._action_done_cb)
 
-    def action_result_cb(self, future):
+    # ------------------------------------------------------------------
+    def _resolve_object(self, color: str | None) -> dict | None:
+        """Look up pick pose from memory, then fall back to live tracked pose."""
+        if color and color in self._object_map:
+            entry = self._object_map[color]
+            return {'x': entry['x'], 'y': entry['y'], 'z': entry['z'], 'frame': 'camera_link'}
+
+        # Try any partial colour match in memory keys
+        if color:
+            for label, entry in self._object_map.items():
+                if color in label:
+                    return {'x': entry['x'], 'y': entry['y'], 'z': entry['z'],
+                            'frame': 'camera_link'}
+
+        # Fall back to live tracked pose
+        if self._live_pose:
+            p = self._live_pose.pose.position
+            return {'x': p.x, 'y': p.y, 'z': p.z,
+                    'frame': self._live_pose.header.frame_id}
+        return None
+
+    def _action_done_cb(self, future):
         try:
             result = future.result()
             if result.success:
-                self.get_logger().info(f"[Coordinator] Action succeeded: {result.message}")
+                self.get_logger().info(f'[Coordinator] Action success: {result.message}')
+                self._publish_feedback('completed')
             else:
-                self.get_logger().warn(f"[Coordinator] Action failed: {result.message}")
+                self.get_logger().warn(f'[Coordinator] Action failed: {result.message}')
+                self._publish_feedback('failed')
         except Exception as e:
-            self.get_logger().error(f"[Coordinator] Service call exception: {e}")
+            self.get_logger().error(f'[Coordinator] Service exception: {e}')
+            self._publish_feedback('failed')
+
+    def _publish_feedback(self, status: str):
+        msg      = String()
+        msg.data = json.dumps({'status': status, 'task': self._current_task})
+        self._feedback_pub.publish(msg)
+        self._current_task = {}  # Reset so next dispatch is accepted
 
 
 def main(args=None):

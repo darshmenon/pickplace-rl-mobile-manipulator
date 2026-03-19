@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 VLA Phase 3 - Language Parser Node
-Converts natural language instructions into structured JSON action commands.
+Upgraded: SmolLM2-360M-Instruct for flexible NLP with regex/keyword fallback.
 """
 
 import re
@@ -11,26 +11,87 @@ from rclpy.node import Node
 from std_msgs.msg import String
 from std_srvs.srv import Trigger
 
+# Fallback vocabulary
+ACTIONS = ['pick', 'grab', 'grasp', 'place', 'put', 'move', 'transfer', 'sort', 'stack', 'clear']
+COLORS  = ['red', 'blue', 'green', 'yellow', 'orange', 'white', 'black', 'purple', 'pink']
+OBJECTS = ['cube', 'box', 'ball', 'cylinder', 'block', 'object', 'item', 'bottle', 'cup', 'mug']
+PLACES  = ['tray', 'bin', 'basket', 'table', 'shelf', 'box', 'container', 'drop zone', 'left', 'right']
 
-# Supported action keywords
-ACTIONS = ['pick', 'grab', 'grasp', 'place', 'put', 'move', 'transfer']
-COLORS  = ['red', 'blue', 'green', 'yellow', 'orange', 'white', 'black']
-OBJECTS = ['cube', 'box', 'ball', 'cylinder', 'block', 'object', 'item']
-PLACES  = ['tray', 'bin', 'basket', 'table', 'shelf', 'box', 'container', 'drop zone']
+_model = None
+_tokenizer = None
+_USE_LLM = False
+
+_SYSTEM_PROMPT = (
+    "You are a robotics instruction parser. "
+    "Given a natural language instruction, output ONLY a valid JSON object with these exact keys: "
+    "action (string), color (string or null), object (string), destination (string), confidence (float 0-1). "
+    "No explanation. No markdown. Just the JSON object."
+)
 
 
-def parse_instruction(text: str) -> dict:
-    """Rule-based NLP parser that extracts intent from an instruction string."""
+def _load_model() -> bool:
+    global _model, _tokenizer, _USE_LLM
+    try:
+        from transformers import AutoModelForCausalLM, AutoTokenizer
+        import torch
+        model_id = 'HuggingFaceTB/SmolLM2-360M-Instruct'
+        _tokenizer = AutoTokenizer.from_pretrained(model_id)
+        _model = AutoModelForCausalLM.from_pretrained(
+            model_id,
+            torch_dtype=torch.float32,
+            device_map='cpu',
+        )
+        _model.eval()
+        _USE_LLM = True
+        return True
+    except Exception:
+        return False
+
+
+def _parse_with_llm(text: str) -> dict | None:
+    if not _USE_LLM:
+        return None
+    try:
+        import torch
+        messages = [
+            {'role': 'system', 'content': _SYSTEM_PROMPT},
+            {'role': 'user',   'content': f'Instruction: {text}'},
+        ]
+        input_text = _tokenizer.apply_chat_template(
+            messages, tokenize=False, add_generation_prompt=True
+        )
+        inputs = _tokenizer(input_text, return_tensors='pt')
+        with torch.no_grad():
+            out = _model.generate(
+                **inputs,
+                max_new_tokens=80,
+                temperature=0.1,
+                do_sample=False,
+                pad_token_id=_tokenizer.eos_token_id,
+            )
+        generated = _tokenizer.decode(
+            out[0][inputs['input_ids'].shape[1]:], skip_special_tokens=True
+        ).strip()
+        match = re.search(r'\{.*\}', generated, re.DOTALL)
+        if match:
+            result = json.loads(match.group(0))
+            result.setdefault('confidence', 0.85)
+            return result
+    except Exception:
+        pass
+    return None
+
+
+def _parse_regex(text: str) -> dict:
     text_lower = text.lower()
-
     action = next((a for a in ACTIONS if a in text_lower), None)
     color  = next((c for c in COLORS  if c in text_lower), None)
     obj    = next((o for o in OBJECTS  if o in text_lower), None)
     place  = next((p for p in PLACES   if p in text_lower), None)
 
-    # Attempt regex extraction for "pick X and place in Y"
     transfer_match = re.search(
-        r'(pick|grab|grasp)\s+(?:the\s+)?(\w+)\s+(?:and\s+)?(?:place|put|transfer)\s+(?:it\s+)?(?:in|into|on|onto)\s+(?:the\s+)?(\w+)',
+        r'(pick|grab|grasp)\s+(?:the\s+)?(\w+)\s+(?:and\s+)?(?:place|put|transfer)'
+        r'\s+(?:it\s+)?(?:in|into|on|onto)\s+(?:the\s+)?(\w+)',
         text_lower
     )
     if transfer_match:
@@ -45,33 +106,55 @@ def parse_instruction(text: str) -> dict:
         'color': color,
         'object': obj or 'cube',
         'destination': place or 'tray',
+        'confidence': 0.6,
+        'parser': 'regex',
         'raw': text,
     }
+
+
+def parse_instruction(text: str) -> dict:
+    result = _parse_with_llm(text)
+    if result:
+        result['parser'] = 'smollm2'
+        result['raw'] = text
+        return result
+    return _parse_regex(text)
 
 
 class VLALanguageNode(Node):
     def __init__(self):
         super().__init__('vla_language_node')
 
-        # Service to parse a text instruction
-        self.srv = self.create_service(Trigger, '/vla/parse_instruction', self.parse_cb)
+        self.declare_parameter('use_llm', True)
+        use_llm = self.get_parameter('use_llm').value
 
-        # Topic-based interface
-        self.text_sub = self.create_subscription(String, '/vla_instruction', self.instruction_cb, 10)
+        if use_llm:
+            self.get_logger().info('Loading SmolLM2-360M-Instruct (first run ~30s)...')
+            if _load_model():
+                self.get_logger().info('SmolLM2-360M-Instruct loaded. LLM parser active.')
+            else:
+                self.get_logger().warn(
+                    'SmolLM2 unavailable (pip install transformers torch). Regex fallback active.'
+                )
+        else:
+            self.get_logger().info('LLM disabled by parameter. Using regex parser.')
+
+        self.srv = self.create_service(Trigger, '/vla/parse_instruction', self._parse_cb)
+        self.text_sub = self.create_subscription(String, '/vla_instruction', self._instruction_cb, 10)
         self.cmd_pub  = self.create_publisher(String, '/vla/structured_command', 10)
 
         self.last_text = ''
-        self.get_logger().info("VLA Language Node ready. Publish to /vla_instruction to start.")
+        self.get_logger().info('VLA Language Node ready. Publish to /vla_instruction to start.')
 
-    def instruction_cb(self, msg: String):
+    def _instruction_cb(self, msg: String):
         self.last_text = msg.data
         result = parse_instruction(msg.data)
-        self.get_logger().info(f"Parsed: {result}")
+        self.get_logger().info(f"[{result.get('parser', '?')}] → {result}")
         out = String()
         out.data = json.dumps(result)
         self.cmd_pub.publish(out)
 
-    def parse_cb(self, request, response):
+    def _parse_cb(self, request, response):
         if self.last_text:
             result = parse_instruction(self.last_text)
             response.success = True
