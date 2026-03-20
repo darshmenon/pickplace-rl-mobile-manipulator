@@ -47,34 +47,38 @@ def _load_model() -> bool:
 
 
 def _parse_with_llm(text: str) -> dict | None:
-    if not _USE_LLM:
+    if not _LLM['active']:
         return None
+    tokenizer = _LLM['tokenizer']
+    model     = _LLM['model']
     try:
         import torch
         messages = [
             {'role': 'system', 'content': _SYSTEM_PROMPT},
             {'role': 'user',   'content': f'Instruction: {text}'},
         ]
-        input_text = _tokenizer.apply_chat_template(
+        input_text = tokenizer.apply_chat_template(
             messages, tokenize=False, add_generation_prompt=True
         )
-        inputs = _tokenizer(input_text, return_tensors='pt')
+        inputs = tokenizer(input_text, return_tensors='pt')
         with torch.no_grad():
-            out = _model.generate(
+            out = model.generate(
                 **inputs,
                 max_new_tokens=80,
                 temperature=0.1,
                 do_sample=False,
-                pad_token_id=_tokenizer.eos_token_id,
+                pad_token_id=tokenizer.eos_token_id,
             )
-        generated = _tokenizer.decode(
+        generated = tokenizer.decode(
             out[0][inputs['input_ids'].shape[1]:], skip_special_tokens=True
         ).strip()
         match = re.search(r'\{.*\}', generated, re.DOTALL)
         if match:
             result = json.loads(match.group(0))
-            result.setdefault('confidence', 0.85)
-            return result
+            # Validate required keys are present; fall through to regex if not
+            if all(k in result for k in ('action', 'object', 'destination')):
+                result.setdefault('confidence', 0.85)
+                return result
     except Exception:
         pass
     return None
