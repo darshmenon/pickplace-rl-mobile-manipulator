@@ -10,7 +10,7 @@ def generate_launch_description():
 
     gazebo_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource([
-            os.path.join(pkg_dir, 'launch', 'gazebo_launch.py')
+            os.path.join(pkg_dir, 'launch', 'gazebo.launch.py')
         ])
     )
     
