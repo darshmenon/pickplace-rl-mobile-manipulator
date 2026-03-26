@@ -29,12 +29,13 @@ def generate_launch_description():
 
     # Delay spawn to let Gazebo fully start
     spawn_robot = TimerAction(
-        period=3.0,
+        period=8.0,
         actions=[
             Node(
                 package='ros_gz_sim',
                 executable='create',
                 arguments=[
+                    '-world', 'pickplace_world',
                     '-name', 'mobile_ur3',
                     '-file', urdf_path,
                     '-x', '0.0',
