@@ -1,11 +1,26 @@
 #!/usr/bin/env python3
 
 import os
+import re
 from launch import LaunchDescription
 from launch.actions import AppendEnvironmentVariable, IncludeLaunchDescription, TimerAction
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch_ros.actions import Node
 from ament_index_python.packages import get_package_share_directory
+
+
+def resolve_package_uris(urdf_str):
+    """Replace package:// URIs with absolute file:// paths so Gazebo can find meshes."""
+    def replace(match):
+        pkg = match.group(1)
+        rel = match.group(2)
+        try:
+            share = get_package_share_directory(pkg)
+            return f'file://{share}/{rel}'
+        except Exception:
+            return match.group(0)
+    return re.sub(r'package://([^/]+)/([^"\'>\s]+)', replace, urdf_str)
+
 
 def generate_launch_description():
 
@@ -16,9 +31,12 @@ def generate_launch_description():
     robotiq_share = get_package_share_directory('robotiq_2f_85_gripper_visualization')
 
     with open(urdf_path, 'r') as f:
-        robot_description = f.read()
+        raw_urdf = f.read()
 
-    # Add mesh resource paths so Gazebo can resolve package:// and model:// URIs
+    # Resolve package:// URIs to absolute paths for robot_state_publisher and Gazebo
+    robot_description = resolve_package_uris(raw_urdf)
+
+    # Also set GZ_SIM_RESOURCE_PATH so Gazebo can find model:// and package:// assets
     set_gz_resource_path = AppendEnvironmentVariable(
         'GZ_SIM_RESOURCE_PATH',
         ':'.join([
@@ -27,7 +45,6 @@ def generate_launch_description():
         ])
     )
 
-    # Use gz_sim.launch.py with -r (run immediately, not paused)
     pkg_ros_gz_sim = get_package_share_directory('ros_gz_sim')
     gz_sim = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
@@ -78,6 +95,16 @@ def generate_launch_description():
             '/wrist_2_joint/cmd_vel@std_msgs/msg/Float64]gz.msgs.Double',
             '/wrist_3_joint/cmd_vel@std_msgs/msg/Float64]gz.msgs.Double',
             '/finger_joint/cmd_vel@std_msgs/msg/Float64]gz.msgs.Double',
+            # RGBD camera
+            '/camera_head/image@sensor_msgs/msg/Image[gz.msgs.Image',
+            '/camera_head/depth_image@sensor_msgs/msg/Image[gz.msgs.Image',
+            '/camera_head/points@sensor_msgs/msg/PointCloud2[gz.msgs.PointCloudPacked',
+            '/camera_head/camera_info@sensor_msgs/msg/CameraInfo[gz.msgs.CameraInfo',
+            # Lidar
+            '/scan@sensor_msgs/msg/LaserScan[gz.msgs.LaserScan',
+            # TF
+            '/tf@tf2_msgs/msg/TFMessage[gz.msgs.Pose_V',
+            '/tf_static@tf2_msgs/msg/TFMessage[gz.msgs.Pose_V',
         ],
         output='screen'
     )

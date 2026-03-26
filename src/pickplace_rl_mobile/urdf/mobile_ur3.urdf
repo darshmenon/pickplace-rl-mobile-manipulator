@@ -862,7 +862,7 @@
         </clip>
       </camera>
       <always_on>1</always_on>
-      <gz_frame_id>camera_head_link</gz_frame_id>
+      <gz_frame_id>camera_head_depth_optical_frame</gz_frame_id>
       <topic>camera_head</topic>
       <update_rate>5</update_rate>
       <visualize>true</visualize>
