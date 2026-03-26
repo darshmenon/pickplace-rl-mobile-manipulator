@@ -117,16 +117,16 @@
     <plugin filename="gz-sim-diff-drive-system" name="gz::sim::systems::DiffDrive">
       <left_joint>left_wheel_joint</left_joint>
       <right_joint>right_wheel_joint</right_joint>
-      <wheel_separation>0.33</wheel_separation>
-      <wheel_radius>0.05</wheel_radius>
+      <wheel_separation>0.41</wheel_separation>
+      <wheel_radius>0.08</wheel_radius>
       <odom_publish_frequency>50</odom_publish_frequency>
-      <topic>cmd_vel</topic>
-      <odom_topic>odom</odom_topic>
+      <topic>/cmd_vel</topic>
+      <odom_topic>/odom</odom_topic>
       <frame_id>odom</frame_id>
       <child_frame_id>chassis_link</child_frame_id>
     </plugin>
     <plugin filename="gz-sim-joint-state-publisher-system" name="gz::sim::systems::JointStatePublisher">
-      <topic>joint_states</topic>
+      <topic>/joint_states</topic>
       <joint_name>shoulder_pan_joint</joint_name>
       <joint_name>shoulder_lift_joint</joint_name>
       <joint_name>elbow_joint</joint_name>
@@ -324,6 +324,12 @@
       <inertia ixx="0.00013626666666666665" ixy="0" ixz="0" iyy="0.00013626666666666665" iyz="0" izz="0.0001792" />
     </inertial>
   </link>
+  <joint name="chassis_to_arm_base" type="fixed">
+    <parent link="chassis_link" />
+    <child link="base_link" />
+    <origin xyz="0.0 0.0 0.1" rpy="0 0 0" />
+  </joint>
+
   <joint name="base_link-base_link_inertia" type="fixed">
     <parent link="base_link" />
     <child link="base_link_inertia" />
@@ -720,64 +726,6 @@
       <hardwareInterface>PositionJointInterface</hardwareInterface>
     </actuator>
   </transmission>
-  <gazebo>
-    <plugin filename="libgazebo_mimic_joint_plugin.so" name="mimic_robotiq_85_1">
-      <joint>robotiq_85_left_knuckle_joint</joint>
-      <mimicJoint>robotiq_85_right_knuckle_joint</mimicJoint>
-    </plugin>
-    <plugin filename="libgazebo_mimic_joint_plugin.so" name="mimic_robotiq_85_2">
-      <joint>robotiq_85_left_knuckle_joint</joint>
-      <mimicJoint>robotiq_85_left_inner_knuckle_joint</mimicJoint>
-    </plugin>
-    <plugin filename="libgazebo_mimic_joint_plugin.so" name="mimic_robotiq_85_3">
-      <joint>robotiq_85_left_knuckle_joint</joint>
-      <mimicJoint>robotiq_85_right_inner_knuckle_joint</mimicJoint>
-    </plugin>
-    <plugin filename="libgazebo_mimic_joint_plugin.so" name="mimic_robotiq_85_4">
-      <joint>robotiq_85_left_knuckle_joint</joint>
-      <mimicJoint>robotiq_85_left_finger_tip_joint</mimicJoint>
-      <multiplier>-1.0</multiplier>
-      <offset>0.0</offset>
-    </plugin>
-    <plugin filename="libgazebo_mimic_joint_plugin.so" name="mimic_robotiq_85_5">
-      <joint>robotiq_85_left_knuckle_joint</joint>
-      <mimicJoint>robotiq_85_right_finger_tip_joint</mimicJoint>
-      <multiplier>-1.0</multiplier>
-      <offset>0.0</offset>
-    </plugin>
-  </gazebo>
-  <gazebo>
-    <plugin filename="libroboticsgroup_gazebo_mimic_joint_plugin.so" name="mimic_robotiq_85_1">
-      <joint>finger_joint</joint>
-      <mimicJoint>right_outer_knuckle_joint</mimicJoint>
-      <multiplier>-1.0</multiplier>
-      <offset>0.0</offset>
-    </plugin>
-    <plugin filename="libroboticsgroup_gazebo_mimic_joint_plugin.so" name="mimic_robotiq_85_2">
-      <joint>finger_joint</joint>
-      <mimicJoint>left_inner_knuckle_joint</mimicJoint>
-      <multiplier>-1.0</multiplier>
-      <offset>0.0</offset>
-    </plugin>
-    <plugin filename="libroboticsgroup_gazebo_mimic_joint_plugin.so" name="mimic_robotiq_85_3">
-      <joint>finger_joint</joint>
-      <mimicJoint>right_inner_knuckle_joint</mimicJoint>
-      <multiplier>-1.0</multiplier>
-      <offset>0.0</offset>
-    </plugin>
-    <plugin filename="libroboticsgroup_gazebo_mimic_joint_plugin.so" name="mimic_robotiq_85_4">
-      <joint>finger_joint</joint>
-      <mimicJoint>left_inner_finger_joint</mimicJoint>
-      <multiplier>1.0</multiplier>
-      <offset>0.0</offset>
-    </plugin>
-    <plugin filename="libroboticsgroup_gazebo_mimic_joint_plugin.so" name="mimic_robotiq_85_5">
-      <joint>finger_joint</joint>
-      <mimicJoint>right_inner_finger_joint</mimicJoint>
-      <multiplier>1.0</multiplier>
-      <offset>0.0</offset>
-    </plugin>
-  </gazebo>
   <joint name="gripper_joint" type="fixed">
     <parent link="tool0" />
     <child link="robotiq_arg2f_base_link" />
@@ -920,46 +868,42 @@
       <visualize>true</visualize>
     </sensor>
   </gazebo>
-  <joint name="chassis_to_ur3" type="fixed">
-    <parent link="chassis_link" />
-    <child link="base_link" />
-    <origin xyz="0.1 0 0.1" rpy="0 0 0" />
-  </joint>
+
   <gazebo>
     <plugin filename="gz-sim-joint-controller-system" name="gz::sim::systems::JointController">
       <joint_name>shoulder_pan_joint</joint_name>
       <initial_velocity>0.0</initial_velocity>
-      <topic>shoulder_pan_joint/cmd_vel</topic>
+      <topic>/shoulder_pan_joint/cmd_vel</topic>
     </plugin>
     <plugin filename="gz-sim-joint-controller-system" name="gz::sim::systems::JointController">
       <joint_name>shoulder_lift_joint</joint_name>
       <initial_velocity>0.0</initial_velocity>
-      <topic>shoulder_lift_joint/cmd_vel</topic>
+      <topic>/shoulder_lift_joint/cmd_vel</topic>
     </plugin>
     <plugin filename="gz-sim-joint-controller-system" name="gz::sim::systems::JointController">
       <joint_name>elbow_joint</joint_name>
       <initial_velocity>0.0</initial_velocity>
-      <topic>elbow_joint/cmd_vel</topic>
+      <topic>/elbow_joint/cmd_vel</topic>
     </plugin>
     <plugin filename="gz-sim-joint-controller-system" name="gz::sim::systems::JointController">
       <joint_name>wrist_1_joint</joint_name>
       <initial_velocity>0.0</initial_velocity>
-      <topic>wrist_1_joint/cmd_vel</topic>
+      <topic>/wrist_1_joint/cmd_vel</topic>
     </plugin>
     <plugin filename="gz-sim-joint-controller-system" name="gz::sim::systems::JointController">
       <joint_name>wrist_2_joint</joint_name>
       <initial_velocity>0.0</initial_velocity>
-      <topic>wrist_2_joint/cmd_vel</topic>
+      <topic>/wrist_2_joint/cmd_vel</topic>
     </plugin>
     <plugin filename="gz-sim-joint-controller-system" name="gz::sim::systems::JointController">
       <joint_name>wrist_3_joint</joint_name>
       <initial_velocity>0.0</initial_velocity>
-      <topic>wrist_3_joint/cmd_vel</topic>
+      <topic>/wrist_3_joint/cmd_vel</topic>
     </plugin>
     <plugin filename="gz-sim-joint-controller-system" name="gz::sim::systems::JointController">
       <joint_name>finger_joint</joint_name>
       <initial_velocity>0.0</initial_velocity>
-      <topic>finger_joint/cmd_vel</topic>
+      <topic>/finger_joint/cmd_vel</topic>
     </plugin>
   </gazebo>
 </robot>

@@ -2,7 +2,8 @@
 
 import os
 from launch import LaunchDescription
-from launch.actions import ExecuteProcess, TimerAction
+from launch.actions import AppendEnvironmentVariable, IncludeLaunchDescription, TimerAction
+from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch_ros.actions import Node
 from ament_index_python.packages import get_package_share_directory
 
@@ -11,36 +12,52 @@ def generate_launch_description():
     pkg_dir = get_package_share_directory('pickplace_rl_mobile')
     world_path = os.path.join(pkg_dir, 'worlds', 'pickplace_world.world')
     urdf_path = os.path.join(pkg_dir, 'urdf', 'mobile_ur3.urdf')
+    ur_description_share = get_package_share_directory('ur_description')
+    robotiq_share = get_package_share_directory('robotiq_2f_85_gripper_visualization')
 
     with open(urdf_path, 'r') as f:
         robot_description = f.read()
 
-    gz_sim = ExecuteProcess(
-        cmd=['gz', 'sim', '--verbose', '--render-engine', 'ogre2', world_path],
-        output='screen'
+    # Add mesh resource paths so Gazebo can resolve package:// and model:// URIs
+    set_gz_resource_path = AppendEnvironmentVariable(
+        'GZ_SIM_RESOURCE_PATH',
+        ':'.join([
+            os.path.join(ur_description_share, '..'),
+            os.path.join(robotiq_share, '..'),
+        ])
+    )
+
+    # Use gz_sim.launch.py with -r (run immediately, not paused)
+    pkg_ros_gz_sim = get_package_share_directory('ros_gz_sim')
+    gz_sim = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(
+            os.path.join(pkg_ros_gz_sim, 'launch', 'gz_sim.launch.py')
+        ),
+        launch_arguments=[('gz_args', f'-r -v 4 {world_path}')]
     )
 
     robot_state_publisher = Node(
         package='robot_state_publisher',
         executable='robot_state_publisher',
-        parameters=[{'robot_description': robot_description}],
+        parameters=[{'robot_description': robot_description, 'use_sim_time': True}],
         output='screen'
     )
 
-    # Delay spawn to let Gazebo fully start
+    # Spawn from /robot_description topic.
+    # z=0.08 matches wheel collision radius so wheels rest on ground correctly.
     spawn_robot = TimerAction(
-        period=8.0,
+        period=5.0,
         actions=[
             Node(
                 package='ros_gz_sim',
                 executable='create',
                 arguments=[
-                    '-world', 'pickplace_world',
+                    '-topic', '/robot_description',
                     '-name', 'mobile_ur3',
-                    '-file', urdf_path,
+                    '-allow_renaming', 'true',
                     '-x', '0.0',
                     '-y', '0.0',
-                    '-z', '0.05',
+                    '-z', '0.08',
                 ],
                 output='screen'
             )
@@ -66,6 +83,7 @@ def generate_launch_description():
     )
 
     return LaunchDescription([
+        set_gz_resource_path,
         gz_sim,
         robot_state_publisher,
         spawn_robot,
