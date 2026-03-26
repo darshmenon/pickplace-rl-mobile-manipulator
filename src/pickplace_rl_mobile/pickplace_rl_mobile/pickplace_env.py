@@ -73,6 +73,7 @@ class PickPlaceEnv(gym.Env):
         # State variables
         self.joint_positions = np.zeros(7)
         self.joint_velocities = np.zeros(7)
+        self._joint_states_received = False
         self.base_pose = np.zeros(3) # x, y, theta
         self.episode_steps = 0
         self.max_episode_steps = 800
@@ -90,6 +91,7 @@ class PickPlaceEnv(gym.Env):
         if len(msg.position) >= 7:
             self.joint_positions = np.array(msg.position[:7])
             self.joint_velocities = np.array(msg.velocity[:7]) if len(msg.velocity) >= 7 else np.zeros(7)
+            self._joint_states_received = True
             
     def odom_callback(self, msg):
         # Extract x, y from odometry
@@ -328,7 +330,13 @@ class PickPlaceEnv(gym.Env):
         # Stop Base
         zero_twist = Twist()
         self.cmd_vel_pub.publish(zero_twist)
-        
+
+        # Wait until joint states are being published (robot is spawned)
+        if not self._joint_states_received:
+            self.node.get_logger().info('Waiting for /joint_states...')
+            while not self._joint_states_received:
+                rclpy.spin_once(self.node, timeout_sec=0.1)
+
         for _ in range(10):
             rclpy.spin_once(self.node, timeout_sec=0.01)
             time.sleep(0.01)

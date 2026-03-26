@@ -21,9 +21,9 @@ def generate_launch_description():
         output='screen'
     )
     
-    # Delay the RL node just slightly so Gazebo can spawn the robot
+    # Delay RL node until Gazebo starts + robot spawns (8s) + bridge settles
     delayed_rl_train_node = TimerAction(
-        period=5.0,
+        period=20.0,
         actions=[rl_train_node]
     )
 
