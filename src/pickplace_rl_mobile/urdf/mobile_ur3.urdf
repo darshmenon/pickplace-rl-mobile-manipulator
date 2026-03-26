@@ -869,6 +869,14 @@
     </sensor>
   </gazebo>
 
+  <!-- Initial joint positions for home pose (arm standing up) -->
+  <gazebo reference="shoulder_lift_joint">
+    <initial_position>-1.5708</initial_position>
+  </gazebo>
+  <gazebo reference="wrist_1_joint">
+    <initial_position>-1.5708</initial_position>
+  </gazebo>
+
   <gazebo>
     <plugin filename="gz-sim-joint-controller-system" name="gz::sim::systems::JointController">
       <joint_name>shoulder_pan_joint</joint_name>
