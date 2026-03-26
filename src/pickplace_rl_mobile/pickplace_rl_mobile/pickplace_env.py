@@ -47,14 +47,13 @@ class PickPlaceEnv(gym.Env):
         # Publishers
         self.cmd_vel_pub = self.node.create_publisher(Twist, '/cmd_vel', 10)
         
-        # Joint velocity publishers
-        self.shoulder_pub = self.node.create_publisher(Float64, '/shoulder_joint/cmd_vel', 10)
-        self.shoulder_pitch_pub = self.node.create_publisher(Float64, '/shoulder_pitch_joint/cmd_vel', 10)
+        # Joint velocity publishers (must match URDF JointController plugin topic names)
+        self.shoulder_pub = self.node.create_publisher(Float64, '/shoulder_pan_joint/cmd_vel', 10)
+        self.shoulder_pitch_pub = self.node.create_publisher(Float64, '/shoulder_lift_joint/cmd_vel', 10)
         self.elbow_pub = self.node.create_publisher(Float64, '/elbow_joint/cmd_vel', 10)
-        self.wrist_roll_pub = self.node.create_publisher(Float64, '/wrist_roll_joint/cmd_vel', 10)
-        self.wrist_pitch_pub = self.node.create_publisher(Float64, '/wrist_pitch_joint/cmd_vel', 10)
-        self.left_finger_pub = self.node.create_publisher(Float64, '/left_finger_joint/cmd_vel', 10)
-        self.right_finger_pub = self.node.create_publisher(Float64, '/right_finger_joint/cmd_vel', 10)
+        self.wrist_roll_pub = self.node.create_publisher(Float64, '/wrist_1_joint/cmd_vel', 10)
+        self.wrist_pitch_pub = self.node.create_publisher(Float64, '/wrist_2_joint/cmd_vel', 10)
+        self.finger_pub = self.node.create_publisher(Float64, '/finger_joint/cmd_vel', 10)
         
         # Subscribers
         self.joint_state_sub = self.node.create_subscription(
@@ -156,7 +155,7 @@ class PickPlaceEnv(gym.Env):
         reward = 0.0
         terminated = False
         
-        gripper_pos = np.mean(self.joint_positions[5:7])
+        gripper_pos = self.joint_positions[6]  # finger_joint: 0=open, 0.8=closed
         ee_global = self.get_global_ee_pos()
         
         # Collision Check: Reaching lower than bin while NOT lowering/grasping/releasing
@@ -217,12 +216,12 @@ class PickPlaceEnv(gym.Env):
                 reward += 20.0
                 
         elif self.current_phase == 2:  
-            if gripper_pos < 0.02: 
+            if gripper_pos > 0.7:  # finger_joint closed (near upper limit 0.8)
                 self.object_grasped = True
                 self.current_phase = 3
-                reward += 50.0 
+                reward += 50.0
             else:
-                reward -= 0.1 
+                reward -= 0.1
                 
         elif self.current_phase == 3:  
             dist_z = abs(ee_global[2] - 0.25)
@@ -264,7 +263,7 @@ class PickPlaceEnv(gym.Env):
                 
             self.prev_distance = dist
             
-            if dist < 0.08 and gripper_pos > 0.02: 
+            if dist < 0.08 and gripper_pos < 0.1:  # finger_joint open (near lower limit 0)
                 self.object_grasped = False
                 reward += 100.0 
                 terminated = True
@@ -288,8 +287,7 @@ class PickPlaceEnv(gym.Env):
         self.wrist_pitch_pub.publish(Float64(data=float(joint_velocities[4])))
         
         gripper_vel = 0.5 if gripper_command > 0 else -0.5
-        self.left_finger_pub.publish(Float64(data=gripper_vel))
-        self.right_finger_pub.publish(Float64(data=gripper_vel))
+        self.finger_pub.publish(Float64(data=gripper_vel))
         
         # Base Command
         twist_msg = Twist()
