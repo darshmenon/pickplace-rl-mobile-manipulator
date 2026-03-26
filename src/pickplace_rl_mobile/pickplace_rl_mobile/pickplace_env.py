@@ -36,11 +36,11 @@ class PickPlaceEnv(gym.Env):
             dtype=np.float32
         )
         
-        # Observation space: 5 joint pos + 3 ee + 3 obj + 1 grasped + 1 phase + 3 base pose (x, y, theta)
+        # Observation space: 5 joint pos + 5 joint vel + 1 finger pos + 3 ee + 3 obj + 1 grasped + 1 phase + 3 base pose (x, y, theta)
         self.observation_space = spaces.Box(
-            low=-np.inf, 
-            high=np.inf, 
-            shape=(16,), 
+            low=-np.inf,
+            high=np.inf,
+            shape=(22,),
             dtype=np.float32
         )
         
@@ -141,9 +141,11 @@ class PickPlaceEnv(gym.Env):
     
     def get_observation(self):
         ee_pos = self.get_end_effector_pos()
-        
+
         obs = np.concatenate([
             self.joint_positions[:5],
+            self.joint_velocities[:5],
+            [self.joint_positions[6]],   # finger_joint position
             ee_pos,
             self.object_pos,
             [float(self.object_grasped)],
