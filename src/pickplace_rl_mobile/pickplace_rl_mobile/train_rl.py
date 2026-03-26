@@ -7,7 +7,7 @@ from stable_baselines3.common.callbacks import CheckpointCallback, EvalCallback
 from stable_baselines3.common.monitor import Monitor
 from pickplace_rl_mobile.pickplace_env import PickPlaceEnv
 
-def train(total_timesteps=100000, save_dir='./models'):
+def train(total_timesteps=500000, save_dir='./models'):
     """
     Train a SAC agent for pick-and-place task.
     
@@ -49,14 +49,15 @@ def train(total_timesteps=100000, save_dir='./models'):
         'MlpPolicy',
         env,
         learning_rate=3e-4,
-        buffer_size=100000,
+        buffer_size=500000,
         learning_starts=1000,
-        batch_size=256,
+        batch_size=512,
         tau=0.005,
         gamma=0.99,
         train_freq=1,
-        gradient_steps=1,
+        gradient_steps=2,
         verbose=1,
+        device='cuda',
         tensorboard_log=os.path.join(save_dir, 'tensorboard')
     )
     
@@ -79,7 +80,7 @@ def train(total_timesteps=100000, save_dir='./models'):
 
 def main():
     parser = argparse.ArgumentParser(description='Train RL agent for pick-and-place')
-    parser.add_argument('--timesteps', type=int, default=100000,
+    parser.add_argument('--timesteps', type=int, default=500000,
                         help='Total training timesteps (default: 100000)')
     parser.add_argument('--save-dir', type=str, default='./rl_models',
                         help='Directory to save models (default: ./rl_models)')
