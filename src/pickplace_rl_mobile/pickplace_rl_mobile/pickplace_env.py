@@ -154,7 +154,8 @@ class PickPlaceEnv(gym.Env):
 
     def world_pose_callback(self, msg):
         for t in msg.transforms:
-            if t.child_frame_id == 'pickup_object':
+            # frame_id is "pickup_object::link" in Gazebo Harmonic Pose_V bridge
+            if 'pickup_object' in t.child_frame_id:
                 p = t.transform.translation
                 self.real_object_pos = np.array([p.x, p.y, p.z])
                 break
@@ -284,6 +285,14 @@ class PickPlaceEnv(gym.Env):
             if dist_xy < 0.15:
                 reward += 5.0 * (1.0 - dist_xy / 0.15)
 
+            # Z-alignment bonus: reward being at the correct grasp height
+            if dist_z < 0.05:
+                reward += 4.0 * (1.0 - dist_z / 0.05)
+
+            # Extra bonus when BOTH xy and z are close simultaneously
+            if dist_xy < 0.08 and dist_z < 0.05:
+                reward += 8.0
+
             # Penalise closing gripper during approach — it serves no purpose in phase 1
             if gripper_pos > 0.5:
                 reward -= 2.0
@@ -316,13 +325,21 @@ class PickPlaceEnv(gym.Env):
             if dist_to_target < 0.10:
                 reward += 8.0 * (1.0 - dist_to_target / 0.10)
 
-            # Touch-range bonus: EE is basically at the object surface — reward this heavily
+            # Touch-range bonus: EE is basically at the object surface — reward heavily
             if dist_to_obj < 0.05:
-                reward += 10.0 * (1.0 - dist_to_obj / 0.05)
+                reward += 15.0 * (1.0 - dist_to_obj / 0.05)
+
+            # Very close bonus: within 3cm is pre-grasp territory
+            if dist_to_obj < 0.03:
+                reward += 10.0
 
             # Reward gripper closing when already near object (actively encourage grasping)
             if gripper_pos > 0.4 and dist_to_obj < 0.07:
-                reward += 5.0 * gripper_pos  # more reward the more closed the gripper
+                reward += 8.0 * gripper_pos  # more reward the more closed the gripper
+
+            # Penalty for opening gripper when very close (don't retreat from grasp)
+            if gripper_pos < 0.2 and dist_to_obj < 0.05:
+                reward -= 5.0
 
             # Grasp fires when EE is within 5cm of object AND gripper closed
             if gripper_pos > 0.7 and dist_to_obj < 0.05:
@@ -351,8 +368,12 @@ class PickPlaceEnv(gym.Env):
                     reward -= 10.0
             dist_z = abs(ee_global[2] - 0.25)
             if self.prev_distance is not None:
-                reward += (self.prev_distance - dist_z) * 50.0
+                delta = self.prev_distance - dist_z
+                reward += delta * 100.0 if delta > 0 else delta * 200.0
             self.prev_distance = dist_z
+            # Bonus for being near lift height
+            if dist_z < 0.08:
+                reward += 5.0 * (1.0 - dist_z / 0.08)
             if dist_z < 0.05:
                 self.current_phase = 4
                 self.prev_distance = None
