@@ -136,20 +136,21 @@ def launch_setup(context, *args, **kwargs):
         )
 
         # --- Spawn robot (staggered by instance index) ---
+        # Use bash -c to explicitly set GZ_PARTITION inline — additional_env inside
+        # TimerAction is not reliably inherited by the child process.
+        spawn_cmd = (
+            f'GZ_PARTITION={partition} '
+            f'ros2 run ros_gz_sim create '
+            f'-topic /{ns}/robot_description '
+            f'-name mobile_ur3 '
+            f'-allow_renaming true '
+            f'-x 0.0 -y 0.0 -z 0.08'
+        )
         spawn = TimerAction(
-            period=8.0 + i * 3.0,
+            period=10.0 + i * 5.0,
             actions=[
                 ExecuteProcess(
-                    cmd=[
-                        'ros2', 'run', 'ros_gz_sim', 'create',
-                        '-topic', f'/{ns}/robot_description',
-                        '-name', f'mobile_ur3',
-                        '-allow_renaming', 'true',
-                        '-x', '0.0',
-                        '-y', '0.0',
-                        '-z', '0.08',
-                    ],
-                    additional_env=gz_env,
+                    cmd=['bash', '-c', spawn_cmd],
                     output='screen',
                 )
             ],
@@ -171,7 +172,7 @@ def launch_setup(context, *args, **kwargs):
         actions.extend([gz_sim, rsp, spawn, bridge])
 
     # --- Training node (wait for all worlds to be ready) ---
-    startup_delay = 25.0 + (n_worlds - 1) * 3.0
+    startup_delay = 20.0 + n_worlds * 5.0
     train_node = TimerAction(
         period=startup_delay,
         actions=[
