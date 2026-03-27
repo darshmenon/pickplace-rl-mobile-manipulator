@@ -150,9 +150,14 @@ class PickPlaceEnv(gym.Env):
                 break
 
     def get_end_effector_pos(self) -> np.ndarray:
-        """EE position in robot chassis frame using proper UR3 DH FK."""
+        """EE position in robot chassis frame using UR3 DH FK.
+        The URDF has a 180° yaw on base_link_inertia so the arm faces +x of chassis.
+        FK gives EE in arm-base frame (arm faces -x before rotation), so flip x,y.
+        """
         ee_in_arm_base = ur3_fk(self.joint_positions[:6])
-        return _ARM_MOUNT_XYZ + ee_in_arm_base
+        # Account for 180° yaw: x→-x, y→-y (arm faces forward after flip)
+        ee_flipped = np.array([-ee_in_arm_base[0], -ee_in_arm_base[1], ee_in_arm_base[2]])
+        return _ARM_MOUNT_XYZ + ee_flipped
 
     def get_global_ee_pos(self) -> np.ndarray:
         """Transform local EE pos to world frame using odometry."""
@@ -164,13 +169,14 @@ class PickPlaceEnv(gym.Env):
         return np.array([gx, gy, gz])
 
     def get_observation(self) -> np.ndarray:
-        ee_pos = self.get_end_effector_pos()
+        # Use global EE so all positional quantities are in the same world frame
+        ee_pos = self.get_global_ee_pos()
         obj_pos = self.real_object_pos if self.real_object_pos is not None else self.object_pos
         obs = np.concatenate([
             self.joint_positions[:6],    # arm joint positions
             self.joint_velocities[:6],   # arm joint velocities
             [self.joint_positions[6]],   # finger_joint position
-            ee_pos,
+            ee_pos,                      # EE in world frame (consistent with obj_pos)
             obj_pos,
             [float(self.object_grasped)],
             [float(self.current_phase)],
@@ -307,11 +313,17 @@ class PickPlaceEnv(gym.Env):
         elif self.current_phase == 4:
             target_xy = self.target_pos[:2]
             ee_xy = ee_global[:2]
-            dist_xy = np.linalg.norm(target_xy - ee_xy) + np.linalg.norm(target_xy - self.base_pose[:2])
+            base_xy = self.base_pose[:2]
+            # Include angle-to-target penalty so base faces goal before placing
+            angle_to_target = np.arctan2(target_xy[1] - base_xy[1], target_xy[0] - base_xy[0])
+            angle_diff = angle_to_target - self.base_pose[2]
+            while angle_diff > np.pi:  angle_diff -= 2 * np.pi
+            while angle_diff < -np.pi: angle_diff += 2 * np.pi
+            dist_xy = np.linalg.norm(target_xy - ee_xy) + np.linalg.norm(target_xy - base_xy) + abs(angle_diff) * 0.3
             if self.prev_distance is not None:
                 reward += (self.prev_distance - dist_xy) * 50.0
             self.prev_distance = dist_xy
-            if np.linalg.norm(target_xy - ee_xy) < 0.15:
+            if np.linalg.norm(target_xy - ee_xy) < 0.15 and abs(angle_diff) < 0.6:
                 self.current_phase = 5
                 self.prev_distance = None
                 reward += 100.0
@@ -328,12 +340,24 @@ class PickPlaceEnv(gym.Env):
 
         reward -= 0.01 * np.sum(np.abs(self.joint_velocities[:6]))
 
+        # During grasp phases (1-3): penalise base rotating away from object
+        # so the arm stays aligned with the bin after scripted pre-grasp
+        if self.current_phase in [1, 2, 3]:
+            ref_pos = self.real_object_pos if self.real_object_pos is not None else self.object_pos
+            bx, by, btheta = self.base_pose
+            desired_angle = np.arctan2(ref_pos[1] - by, ref_pos[0] - bx)
+            angle_err = desired_angle - btheta
+            while angle_err > np.pi:  angle_err -= 2 * np.pi
+            while angle_err < -np.pi: angle_err += 2 * np.pi
+            if abs(angle_err) > 0.5:
+                reward -= abs(angle_err) * 0.2
+
         return reward, terminated
 
     def step(self, action):
         rclpy.spin_once(self.node, timeout_sec=0.01)
 
-        joint_vels = action[:6] * 0.5
+        joint_vels = action[:6] * 0.3
         gripper_command = action[6]
         base_linear_vel = action[7] * 0.5
         base_angular_vel = action[8] * 1.0
@@ -368,18 +392,56 @@ class PickPlaceEnv(gym.Env):
 
         return obs, reward, terminated, truncated, {}
 
+    def _scripted_pregrasp(self):
+        """
+        P-controller that drives the base to ~22cm from the object and tucks the arm.
+        Runs for up to 300 steps before handing off to RL.
+        Target: base within 0.25m of object, facing it, arm raised.
+        """
+        obj_pos = self.real_object_pos if self.real_object_pos is not None else self.object_pos
+        for _ in range(300):
+            rclpy.spin_once(self.node, timeout_sec=0.01)
+            obj_pos = self.real_object_pos if self.real_object_pos is not None else self.object_pos
+
+            bx, by, btheta = self.base_pose
+            dx = obj_pos[0] - bx
+            dy = obj_pos[1] - by
+            dist = np.sqrt(dx * dx + dy * dy)
+
+            if dist < 0.27:
+                # Close enough — stop base
+                self.cmd_vel_pub.publish(Twist())
+                break
+
+            # P-controller: turn to face object then drive forward
+            angle_to = np.arctan2(dy, dx)
+            angle_err = angle_to - btheta
+            while angle_err > np.pi:  angle_err -= 2 * np.pi
+            while angle_err < -np.pi: angle_err += 2 * np.pi
+
+            tw = Twist()
+            tw.angular.z = float(np.clip(angle_err * 2.0, -1.0, 1.0))
+            tw.linear.x = float(np.clip((dist - 0.25) * 1.5, 0.0, 0.4)) if abs(angle_err) < 0.4 else 0.0
+            self.cmd_vel_pub.publish(tw)
+
+            # Keep arm tucked upright during navigation: command shoulder_lift up
+            self.shoulder_pitch_pub.publish(Float64(data=-0.3 if self.joint_positions[1] > -1.2 else 0.0))
+            self.elbow_pub.publish(Float64(data=0.3 if self.joint_positions[2] < 1.2 else 0.0))
+            time.sleep(0.05)
+
+        self.cmd_vel_pub.publish(Twist())
+
     def reset(self, seed=None, **kwargs):
         super().reset(seed=seed)
 
         self.episode_steps = 0
         self.object_grasped = False
-        self.current_phase = 0
+        self.current_phase = 1  # start directly at lowering phase (base already positioned)
         self.prev_distance = None
         self.grasp_verify_steps = 0
 
-        random_x = 0.5 + np.random.rand() * 0.2
-        random_y = -0.2 + np.random.rand() * 0.4
-        self.object_start_pos = np.array([random_x, random_y, 0.055])
+        # Object is fixed in Gazebo at ~(0.6, 0, 0.065); real_object_pos will give exact position
+        self.object_start_pos = np.array([0.6, 0.0, 0.065])
         self.object_pos = self.object_start_pos.copy()
 
         self.cmd_vel_pub.publish(Twist())
@@ -388,6 +450,9 @@ class PickPlaceEnv(gym.Env):
             self.node.get_logger().info('Waiting for /joint_states...')
             while not self._joint_states_received:
                 rclpy.spin_once(self.node, timeout_sec=0.1)
+
+        # Scripted pre-grasp: drive base to ~25cm from object, arm tucked
+        self._scripted_pregrasp()
 
         for _ in range(10):
             rclpy.spin_once(self.node, timeout_sec=0.01)
