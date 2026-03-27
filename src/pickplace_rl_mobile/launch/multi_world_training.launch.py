@@ -18,6 +18,7 @@ Usage:
 import os
 import re
 import yaml
+from os import environ, pathsep
 
 from launch import LaunchDescription
 from launch.actions import (
@@ -100,9 +101,18 @@ def launch_setup(context, *args, **kwargs):
 
     ur_description_share = get_package_share_directory('ur_description')
     robotiq_share = get_package_share_directory('robotiq_2f_85_gripper_visualization')
-    gz_resource_path = ':'.join([
+    gz_resource_path = pathsep.join([
         os.path.join(ur_description_share, '..'),
         os.path.join(robotiq_share, '..'),
+        environ.get('GZ_SIM_RESOURCE_PATH', ''),
+        environ.get('IGN_GAZEBO_RESOURCE_PATH', ''),
+    ])
+    # GZ_SIM_SYSTEM_PLUGIN_PATH must include LD_LIBRARY_PATH so Gazebo can find
+    # plugins like DiffDrive, JointStatePublisher, JointController, etc.
+    gz_plugin_path = pathsep.join([
+        environ.get('GZ_SIM_SYSTEM_PLUGIN_PATH', ''),
+        environ.get('LD_LIBRARY_PATH', ''),
+        environ.get('IGN_GAZEBO_SYSTEM_PLUGIN_PATH', ''),
     ])
 
     with open(urdf_path, 'r') as f:
@@ -116,6 +126,7 @@ def launch_setup(context, *args, **kwargs):
         gz_env = {
             'GZ_PARTITION': partition,
             'GZ_SIM_RESOURCE_PATH': gz_resource_path,
+            'GZ_SIM_SYSTEM_PLUGIN_PATH': gz_plugin_path,
         }
 
         # --- Gazebo server ---
