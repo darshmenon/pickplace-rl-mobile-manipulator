@@ -399,7 +399,7 @@ class PickPlaceEnv(gym.Env):
             self.object_pos = ee_global.copy()
             self.object_pos[2] -= 0.05
 
-        time.sleep(0.01)
+        time.sleep(0.005)
 
         obs = self.get_observation()
         reward, terminated = self.compute_reward()
@@ -444,7 +444,7 @@ class PickPlaceEnv(gym.Env):
             # Keep arm tucked upright during navigation: command shoulder_lift up
             self.shoulder_pitch_pub.publish(Float64(data=-0.3 if self.joint_positions[1] > -1.2 else 0.0))
             self.elbow_pub.publish(Float64(data=0.3 if self.joint_positions[2] < 1.2 else 0.0))
-            time.sleep(0.05)
+            time.sleep(0.02)
 
         self.cmd_vel_pub.publish(Twist())
 
