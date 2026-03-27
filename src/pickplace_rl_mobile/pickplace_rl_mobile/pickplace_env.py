@@ -276,7 +276,8 @@ class PickPlaceEnv(gym.Env):
             # Combined: reach grasp height + move EE toward object horizontally
             dist_combined = dist_z + dist_xy * 0.5
             if self.prev_distance is not None:
-                reward += (self.prev_distance - dist_combined) * 50.0
+                delta = self.prev_distance - dist_combined
+                reward += delta * 50.0 if delta > 0 else delta * 150.0  # 3× harsher when retreating
             self.prev_distance = dist_combined
 
             # Transition when EE is at right height and close in XY
@@ -299,7 +300,8 @@ class PickPlaceEnv(gym.Env):
 
             # Dense reward: guide EE toward the grasp target (not the object center)
             if self.prev_distance is not None:
-                reward += (self.prev_distance - dist_to_target) * 30.0
+                delta = self.prev_distance - dist_to_target
+                reward += delta * 30.0 if delta > 0 else delta * 120.0  # 4× harsher when retreating
             self.prev_distance = dist_to_target
 
             # Grasp fires when EE is within 8cm of object AND gripper closed
