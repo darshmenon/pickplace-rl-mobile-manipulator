@@ -105,6 +105,8 @@ def generate_launch_description():
             # TF
             '/tf@tf2_msgs/msg/TFMessage[gz.msgs.Pose_V',
             '/tf_static@tf2_msgs/msg/TFMessage[gz.msgs.Pose_V',
+            # World dynamic poses — all models including pickup_object
+            '/world/pickplace_world/dynamic_pose/info@tf2_msgs/msg/TFMessage[gz.msgs.Pose_V',
         ],
         output='screen'
     )

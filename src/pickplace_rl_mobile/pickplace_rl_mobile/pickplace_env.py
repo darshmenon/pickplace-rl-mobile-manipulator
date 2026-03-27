@@ -9,6 +9,7 @@ from sensor_msgs.msg import JointState
 from geometry_msgs.msg import Twist
 from nav_msgs.msg import Odometry
 from std_msgs.msg import Float64
+from tf2_msgs.msg import TFMessage
 import time
 
 # UR3 DH parameters: (a_m, d_m, alpha_rad) per joint
@@ -99,6 +100,9 @@ class PickPlaceEnv(gym.Env):
             JointState, 'joint_states', self.joint_state_callback, 10)
         self.odom_sub = self.node.create_subscription(
             Odometry, 'odom', self.odom_callback, 10)
+        self.world_pose_sub = self.node.create_subscription(
+            TFMessage, '/world/pickplace_world/dynamic_pose/info',
+            self.world_pose_callback, 10)
 
         # State variables
         # JointStatePublisher order: shoulder_pan[0], shoulder_lift[1], elbow[2],
@@ -115,6 +119,8 @@ class PickPlaceEnv(gym.Env):
         self.target_pos = np.array([0.6, 0.5, 0.1])
         self.object_pos = self.object_start_pos.copy()
         self.object_grasped = False
+        self.real_object_pos = None  # updated from Gazebo world pose
+        self.grasp_verify_steps = 0
 
         self.current_phase = 0
         self.prev_distance = None
@@ -135,6 +141,13 @@ class PickPlaceEnv(gym.Env):
         siny_cosp = 2 * (q.w * q.z + q.x * q.y)
         cosy_cosp = 1 - 2 * (q.y * q.y + q.z * q.z)
         self.base_pose = np.array([x, y, np.arctan2(siny_cosp, cosy_cosp)])
+
+    def world_pose_callback(self, msg):
+        for t in msg.transforms:
+            if t.child_frame_id == 'pickup_object':
+                p = t.transform.translation
+                self.real_object_pos = np.array([p.x, p.y, p.z])
+                break
 
     def get_end_effector_pos(self) -> np.ndarray:
         """EE position in robot chassis frame using proper UR3 DH FK."""
@@ -248,20 +261,29 @@ class PickPlaceEnv(gym.Env):
 
         elif self.current_phase == 2:
             # Phase 2: Grasping the object
-            # Require gripper to be closed AND EE near the object — prevents
-            # the agent from "grasping air" and falsely triggering phase 3.
-            dist_to_obj = np.linalg.norm(ee_global - self.object_pos)
-            if gripper_pos > 0.7 and dist_to_obj < 0.10:
+            # Use real Gazebo object pos if available, else fall back to tracked pos.
+            ref_obj = self.real_object_pos if self.real_object_pos is not None else self.object_pos
+            dist_to_obj = np.linalg.norm(ee_global - ref_obj)
+            if gripper_pos > 0.7 and dist_to_obj < 0.08:
                 self.object_grasped = True
                 self.current_phase = 3
+                self.grasp_verify_steps = 0
                 reward += 500.0
-            elif gripper_pos > 0.7 and dist_to_obj >= 0.10:
-                # Closed on air — penalise and encourage re-opening
+            elif gripper_pos > 0.7 and dist_to_obj >= 0.08:
+                # Closed on air — penalise
                 reward -= 2.0
             else:
                 reward -= 0.1
 
         elif self.current_phase == 3:
+            # Verify grasp: real object should rise with EE; if it stays on the floor, abort.
+            if self.real_object_pos is not None:
+                self.grasp_verify_steps += 1
+                if self.grasp_verify_steps > 10 and self.real_object_pos[2] < 0.06:
+                    # Object didn't lift — grasp failed, go back to phase 2
+                    self.object_grasped = False
+                    self.current_phase = 2
+                    reward -= 50.0
             dist_z = abs(ee_global[2] - 0.25)
             if self.prev_distance is not None:
                 reward += (self.prev_distance - dist_z) * 50.0
@@ -342,6 +364,7 @@ class PickPlaceEnv(gym.Env):
         self.object_grasped = False
         self.current_phase = 0
         self.prev_distance = None
+        self.grasp_verify_steps = 0
 
         random_x = 0.5 + np.random.rand() * 0.2
         random_y = -0.2 + np.random.rand() * 0.4
