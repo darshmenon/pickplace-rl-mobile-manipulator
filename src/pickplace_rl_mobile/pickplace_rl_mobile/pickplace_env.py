@@ -277,11 +277,19 @@ class PickPlaceEnv(gym.Env):
             dist_combined = dist_z + dist_xy * 0.5
             if self.prev_distance is not None:
                 delta = self.prev_distance - dist_combined
-                reward += delta * 50.0 if delta > 0 else delta * 150.0  # 3× harsher when retreating
+                reward += delta * 100.0 if delta > 0 else delta * 300.0  # 3× harsher when retreating
             self.prev_distance = dist_combined
 
+            # Proximity bonus: reward staying near the object (not just approaching)
+            if dist_xy < 0.15:
+                reward += 5.0 * (1.0 - dist_xy / 0.15)
+
+            # Penalise closing gripper during approach — it serves no purpose in phase 1
+            if gripper_pos > 0.5:
+                reward -= 2.0
+
             # Transition when EE is at right height and close in XY
-            if dist_z < 0.05 and dist_xy < 0.12:
+            if dist_z < 0.04 and dist_xy < 0.06:
                 self.current_phase = 2
                 self.prev_distance = None
                 reward += 100.0
@@ -301,18 +309,31 @@ class PickPlaceEnv(gym.Env):
             # Dense reward: guide EE toward the grasp target (not the object center)
             if self.prev_distance is not None:
                 delta = self.prev_distance - dist_to_target
-                reward += delta * 30.0 if delta > 0 else delta * 120.0  # 4× harsher when retreating
+                reward += delta * 80.0 if delta > 0 else delta * 320.0  # 4× harsher when retreating
             self.prev_distance = dist_to_target
 
-            # Grasp fires when EE is within 8cm of object AND gripper closed
-            if gripper_pos > 0.7 and dist_to_obj < 0.08:
+            # Proximity bonus: reward staying near grasp target (prevents drifting away)
+            if dist_to_target < 0.10:
+                reward += 8.0 * (1.0 - dist_to_target / 0.10)
+
+            # Touch-range bonus: EE is basically at the object surface — reward this heavily
+            if dist_to_obj < 0.05:
+                reward += 10.0 * (1.0 - dist_to_obj / 0.05)
+
+            # Reward gripper closing when already near object (actively encourage grasping)
+            if gripper_pos > 0.4 and dist_to_obj < 0.07:
+                reward += 5.0 * gripper_pos  # more reward the more closed the gripper
+
+            # Grasp fires when EE is within 5cm of object AND gripper closed
+            if gripper_pos > 0.7 and dist_to_obj < 0.05:
                 self.object_grasped = True
                 self.current_phase = 3
                 self.grasp_verify_steps = 0
                 self.prev_distance = None
-                reward += 500.0
+                reward += 1000.0
             elif gripper_pos > 0.7 and dist_to_obj >= 0.08:
-                reward -= 0.1
+                # Penalty scales with distance: closing far away = much worse than closing nearby
+                reward -= 0.5 + dist_to_obj * 5.0
 
             # Wrist orientation reward: nudge gripper to horizontal (wrist_2 ≈ 0)
             # so fingers are parallel to ground for side-grasp of cylinder
@@ -382,7 +403,7 @@ class PickPlaceEnv(gym.Env):
         return reward, terminated
 
     def step(self, action):
-        rclpy.spin_once(self.node, timeout_sec=0.01)
+        rclpy.spin_once(self.node, timeout_sec=0.005)
 
         # Position delta control: target = current + delta, then P-drive toward target.
         # Max delta per step = 0.05 rad → fine manipulation without velocity explosion.
@@ -421,7 +442,7 @@ class PickPlaceEnv(gym.Env):
             self.object_pos = ee_global.copy()
             self.object_pos[2] -= 0.05
 
-        time.sleep(0.005)
+        time.sleep(0.002)
 
         obs = self.get_observation()
         reward, terminated = self.compute_reward()
@@ -439,7 +460,7 @@ class PickPlaceEnv(gym.Env):
         """
         obj_pos = self.real_object_pos if self.real_object_pos is not None else self.object_pos
         for _ in range(300):
-            rclpy.spin_once(self.node, timeout_sec=0.01)
+            rclpy.spin_once(self.node, timeout_sec=0.005)
             obj_pos = self.real_object_pos if self.real_object_pos is not None else self.object_pos
 
             bx, by, btheta = self.base_pose
@@ -447,8 +468,8 @@ class PickPlaceEnv(gym.Env):
             dy = obj_pos[1] - by
             dist = np.sqrt(dx * dx + dy * dy)
 
-            if dist < 0.27:
-                # Close enough — stop base
+            if dist < 0.18:
+                # Close enough — stop base (18cm, arm easily reaches object at this range)
                 self.cmd_vel_pub.publish(Twist())
                 break
 
@@ -466,7 +487,7 @@ class PickPlaceEnv(gym.Env):
             # Keep arm tucked upright during navigation: command shoulder_lift up
             self.shoulder_pitch_pub.publish(Float64(data=-0.3 if self.joint_positions[1] > -1.2 else 0.0))
             self.elbow_pub.publish(Float64(data=0.3 if self.joint_positions[2] < 1.2 else 0.0))
-            time.sleep(0.02)
+            time.sleep(0.01)
 
         self.cmd_vel_pub.publish(Twist())
 
@@ -512,7 +533,7 @@ class PickPlaceEnv(gym.Env):
         self._scripted_pregrasp()
 
         for _ in range(10):
-            rclpy.spin_once(self.node, timeout_sec=0.01)
+            rclpy.spin_once(self.node, timeout_sec=0.005)
             time.sleep(0.01)
 
         return self.get_observation(), {}

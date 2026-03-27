@@ -53,7 +53,7 @@ def train(total_timesteps=500000, save_dir='./models', n_envs=1):
         eval_env,
         best_model_save_path=save_dir,
         log_path=save_dir,
-        eval_freq=max(5000 // n_envs, 1),
+        eval_freq=max(20000 // n_envs, 1),
         deterministic=True,
         render=False
     )
