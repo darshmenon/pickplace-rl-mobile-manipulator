@@ -47,24 +47,26 @@ Both run on top of **Nav2 + SLAM** for autonomous navigation. The mobile base re
 
 ## Reinforcement Learning
 
-The RL system trains a **SAC (Soft Actor-Critic)** agent via [Stable-Baselines3](https://stable-baselines3.readthedocs.io/) in a custom Gymnasium environment (`PickPlaceEnv`) that wraps the live ROS 2 simulation.
+The RL system trains a **SAC (Soft Actor-Critic)** agent via [Stable-Baselines3](https://stable-baselines3.readthedocs.io/) in a custom Gymnasium environment (`PickPlaceEnv`) that wraps the live ROS 2 + Gazebo simulation. The agent learns a **6-phase curriculum** (approach → lower → grasp → lift → transport → place).
 
-### Observation Space (16-dim)
+### Observation Space (24-dim)
 
 | Slice | Dimensions | Description |
 |-------|-----------|-------------|
-| `joint_positions` | 5 | Arm joint angles |
-| `end_effector_pos` | 3 | EE position (x, y, z) |
+| `joint_positions` | 6 | UR3 arm joint angles |
+| `joint_velocities` | 6 | UR3 arm joint velocities |
+| `finger_position` | 1 | Gripper finger position |
+| `end_effector_pos` | 3 | EE position (x, y, z) via FK |
 | `object_pos` | 3 | Target object position |
 | `object_grasped` | 1 | Binary grasp flag |
-| `current_phase` | 1 | Task phase (reach → grasp → place) |
+| `current_phase` | 1 | Task phase (0-5) |
 | `base_pose` | 3 | Mobile base (x, y, θ) |
 
-### Action Space (8-dim, continuous in [-1, 1])
+### Action Space (9-dim, continuous in [-1, 1])
 
 | Slice | Dimensions | Description |
 |-------|-----------|-------------|
-| `joint_velocities` | 5 | Arm joint velocity commands |
+| `joint_velocities` | 6 | UR3 arm joint velocity commands |
 | `gripper_control` | 1 | Open / close gripper |
 | `base_linear_vel` | 1 | Forward / backward base speed |
 | `base_angular_vel` | 1 | Rotational base speed |
@@ -72,8 +74,8 @@ The RL system trains a **SAC (Soft Actor-Critic)** agent via [Stable-Baselines3]
 ### Training
 
 ```bash
-# Train SAC from scratch (saves checkpoints every 10k steps)
-ros2 launch pickplace_rl_mobile rl_train.launch.py
+# Train SAC with Gazebo visualization (recommended)
+./src/pickplace_rl_mobile/launch/run_rl_training.sh
 
 # Monitor training
 tensorboard --logdir ./rl_models/tensorboard

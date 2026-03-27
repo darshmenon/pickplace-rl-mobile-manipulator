@@ -196,7 +196,10 @@
           </surface>
         </collision>
       </link>
-  <model name="static_camera_model">
+    </model>
+
+    <!-- Static Camera (world-fixed, no jitter) -->
+    <model name="static_camera_model">
       <static>true</static>
       <pose>0.6 0.0 0.8 0 1.5708 0</pose>
       <link name="camera_link">
