@@ -16,6 +16,7 @@ setup(
             'launch/gazebo.launch.py',
             'launch/rl_train.launch.py',
             'launch/standalone_rl_training.launch.py',
+            'launch/multi_world_training.launch.py',
             'launch/full_system.launch.py',
             'launch/display_mobile_ur3.launch.py',
             'launch/vla_phase1.launch.py',
