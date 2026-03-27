@@ -135,7 +135,7 @@
   <joint name="front_caster_joint" type="fixed">
     <parent link="chassis_link" />
     <child link="front_caster" />
-    <origin xyz="0.20 0 -0.04" rpy="0 0 0" />
+    <origin xyz="0.30 0 -0.04" rpy="0 0 0" />
   </joint>
   <gazebo reference="front_caster">
     <mu1>0.0</mu1>

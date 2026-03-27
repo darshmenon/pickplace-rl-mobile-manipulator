@@ -233,11 +233,15 @@ class PickPlaceEnv(gym.Env):
             if arm_speed < 0.05:
                 reward -= 1.0
 
-            # Encourage keeping the arm raised during approach (stay above 0.15m)
+            # Keep arm raised and close to body while driving to avoid tipping the base.
+            local_ee = self.get_end_effector_pos()
             if ee_global[2] < 0.15:
-                reward -= 2.0  # gentle penalty for being too low during approach
+                reward -= 2.0  # too low during approach
             elif ee_global[2] > 0.20:
-                reward += 0.5  # small bonus for good height
+                reward += 0.5
+            # Penalize arm extending far forward while still driving (base_dist > 0.30)
+            if base_dist_xy > 0.30 and local_ee[0] > 0.25:
+                reward -= 3.0 * (local_ee[0] - 0.25)  # progressively stiffer
 
             # Phase 0 -> Phase 1 Transition:
             # Bin left-wall outer face is at x=0.405 (object_x - 0.195).
