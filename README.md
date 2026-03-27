@@ -17,14 +17,7 @@ Both run on top of **Nav2 + SLAM** for autonomous navigation. The mobile base re
 
 ---
 
-## What This Robot Can Do
 
-1. **Understand natural language** — `"sort all objects by colour"` or `"pick the blue cube and place in the tray"`
-2. **See any object** — open-vocabulary detection via OWLv2 (`"red coffee mug"`, `"yellow banana"`)
-3. **Remember where things are** — persistent object map with 30s occlusion decay
-4. **Plan multi-step tasks** — decompose sort/stack/clear goals into sequential pick-and-place actions
-5. **Navigate autonomously** — Nav2 + SLAM + frontier-based exploration
-6. **Stay safe** — real-time joint limit, workspace, and obstacle monitoring with e-stop
 
 ---
 
@@ -96,22 +89,113 @@ The agent learns through **potential-based reward shaping** across 6 sequential 
 | **4: Transport** | Drive to final placement location | EE within 15cm of target | +100 |
 | **5: Place** | Lower and release object | Distance < 8cm, gripper open | +1000 |
 
-**Anti-regression penalties:** In Phases 0 and 1, the agent receives a `-5.0` penalty for moving away from the target and `-1.0` for keeping joints stationary. This prevents the common RL failure mode of oscillating or freezing.
+**Anti-regression penalties:** In Phases 0 and 1, the agent receives a `-10.0` penalty for moving away from the target and `-1.0` for keeping joints stationary. This prevents the common RL failure mode of oscillating or freezing.
 
 **Safety penalties:** Ground collision (EE z < 3cm) and base tipping (joint velocity spike > 10 rad/s) both terminate the episode with `-500`.
 
+### Why SAC?
+
+**Soft Actor-Critic** is ideal for robotic manipulation because:
+- **Continuous action space** — SAC handles the 9-dim continuous output (joint velocities + gripper + base) natively, unlike DQN which requires discretization
+- **Maximum entropy** — SAC maximizes both reward AND entropy, encouraging exploration. This is critical for multi-phase tasks where the agent must discover the grasp phase to unlock later rewards
+- **Off-policy** — SAC reuses past experience (replay buffer), making it 10-100× more sample-efficient than PPO for robotics
+- **Automatic temperature tuning** — The entropy coefficient (`ent_coef`) auto-tunes, so the agent explores aggressively early on and exploits learned behavior later
+
+### Reward Shaping: Potential-Based Differences
+
+Instead of sparse rewards (only +1000 at the very end), we use **potential-based shaping**:
+
+```
+reward = (previous_distance - current_distance) × scale_factor
+```
+
+This gives the agent a dense gradient (warm/cold signal) at every step. Moving closer → positive reward, moving away → negative. The key insight is that difference-based shaping is **theoretically optimal** — it doesn't change the optimal policy (see Ng et al., 1999), but dramatically accelerates learning.
+
+### Expected Training Results
+
+| Timesteps | Mean Reward | Episode Length | Behavior |
+|-----------|------------|----------------|----------|
+| 0-10k | -600 to -1000 | 50-100 | Random exploration, frequent collisions |
+| 10k-50k | -400 to -600 | 200-400 | Base begins aligning toward object |
+| 50k-150k | -100 to -400 | 400-600 | Consistent approach + arm lowering |
+| 150k-300k | 0 to +200 | 600-800 | Grasping attempts, occasional lifts |
+| 300k-500k | +500 to +1500 | 800 | Full pick-place with transport |
+
+### Where to Find the Trained Policy
+
+```
+./rl_models/
+├── best_model.zip              # Best model by eval reward
+├── pickplace_model_10000_steps.zip  # Checkpoint at 10k
+├── pickplace_model_20000_steps.zip  # Checkpoint at 20k
+├── ...
+├── evaluations.npz             # Numpy array of eval metrics
+└── tensorboard/
+    └── SAC_XX/                 # TensorBoard event files
+```
+
 ### Inference
 
-The trained policy runs inside `manip_rl_node` at **20 Hz**. It subscribes to live perception output (object pose from the VLA vision node) and publishes joint velocity commands + base `cmd_vel`.
+The trained policy runs inside `manip_rl_node` at **20 Hz**:
 
 ```bash
-# Run the trained RL policy node
 ros2 run pickplace_rl_mobile manip_rl_node --ros-args -p model_path:=./rl_models/best_model.zip
 ```
 
 ---
 
-## VLA Pipeline
+## Architecture
+
+### Mobile Base Design
+
+The differential drive chassis features:
+- **4-point contact**: Two driven wheels (radius 8cm) + two passive zero-friction caster spheres (radius 4cm)
+- **10kg chassis mass**: Low center of gravity prevents tipping under UR3 arm movement
+- **Static world camera**: RGBD sensor fixed at (0.6, 0, 0.8) for jitter-free visual observations
+
+### Control Architecture
+
+```
+SAC Policy (20 Hz)
+    ├── Joint velocities → /shoulder_pan_joint/cmd_vel (Float64)
+    ├── Joint velocities → /shoulder_lift_joint/cmd_vel (Float64)
+    ├── Joint velocities → /elbow_joint/cmd_vel (Float64)
+    ├── Joint velocities → /wrist_1_joint/cmd_vel (Float64)
+    ├── Joint velocities → /wrist_2_joint/cmd_vel (Float64)
+    ├── Joint velocities → /wrist_3_joint/cmd_vel (Float64)
+    ├── Gripper command  → /finger_joint/cmd_vel (Float64)
+    └── Base velocity    → /cmd_vel (Twist)
+```
+
+---
+
+## Quick Start
+
+```bash
+# Install dependencies
+pip install stable-baselines3 gymnasium tensorboard
+
+# Build
+colcon build --packages-up-to pickplace_rl_mobile
+source install/setup.bash
+
+# Train with Gazebo visualization
+./src/pickplace_rl_mobile/launch/run_rl_training.sh
+
+# Monitor training
+tensorboard --logdir ./rl_models/tensorboard
+
+# Run trained policy
+ros2 run pickplace_rl_mobile manip_rl_node --ros-args -p model_path:=./rl_models/best_model.zip
+```
+
+---
+
+## Future Plans
+
+### VLA (Vision-Language-Action) Pipeline
+
+A planned language-conditioned manipulation system that extends the RL policy with:
 
 ```
 User text  →  SmolLM2 (language)  →  Task Planner  →  Coordinator
@@ -121,55 +205,22 @@ Camera     →  OWLv2 (vision)      →  Object Memory  ──────┘
                                                     MoveIt2 Action Node
 ```
 
-Six nodes, each independently testable:
-
-| Node | Purpose |
-|------|---------|
-| `vla_language_node` | Text → structured JSON (SmolLM2 / regex) |
-| `vla_vision_node` | Camera → object poses (OWLv2 / HSV) |
-| `object_memory_node` | Persistent object map with decay |
-| `task_planner_node` | Multi-step task decomposition |
-| `vla_coordinator_node` | Resolves poses and drives execution |
-| `vla_action_node` | MoveIt2 motion planning + gripper |
-
----
-
-## Quick Start
-
-```bash
-# Install ML dependencies (optional — graceful fallback without them)
-pip install transformers torch pillow stable-baselines3 gymnasium
-
-# Build
-colcon build --packages-select pickplace_rl_mobile
-source install/setup.bash
-
-# Launch VLA pipeline (all 6 nodes)
-ros2 launch pickplace_rl_mobile vla_full_pipeline.launch.py
-
-# Launch without ML models (zero extra dependencies)
-ros2 launch pickplace_rl_mobile vla_full_pipeline.launch.py use_llm:=false use_owlv2:=false
-
-# Send a command
-ros2 topic pub /vla_instruction std_msgs/String "data: 'pick the blue cube and place in tray'"
-
-# Multi-step task
-ros2 topic pub /vla_instruction std_msgs/String "data: 'sort all objects by colour'"
-
-# Full system (Gazebo + perception + safety + Nav2)
-ros2 launch pickplace_rl_mobile full_system.launch.py use_nav2:=true
-
-# RL training
-ros2 launch pickplace_rl_mobile rl_train.launch.py
-tensorboard --logdir ./rl_models/tensorboard
-```
+- **Understand natural language** — `"sort all objects by colour"` or `"pick the blue cube and place in the tray"`
+- **See any object** — open-vocabulary detection via OWLv2 (`"red coffee mug"`, `"yellow banana"`)
+- **Remember where things are** — persistent object map with 30s occlusion decay
+- **Plan multi-step tasks** — decompose sort/stack/clear goals into sequential pick-and-place actions
+- **Navigate autonomously** — Nav2 + SLAM + frontier-based exploration
+- **Stay safe** — real-time joint limit, workspace, and obstacle monitoring with e-stop
+- **Domain randomization** — Randomize object pose, mass, friction for sim-to-real transfer
+- **HER (Hindsight Experience Replay)** — Relabel failed episodes for faster learning
+- **Image observations** — CNN encoder for the RGBD camera feed
 
 ---
 
 ## Documentation
 
-- **[docs/vla_concepts.md](./docs/vla_concepts.md)** — VLA architecture, node reference, launch guide, ML setup
-- **[docs/system_architecture_and_improvements.md](./docs/system_architecture_and_improvements.md)** — Full system architecture, topic reference, roadmap
+- **[docs/vla_concepts.md](./docs/vla_concepts.md)** — VLA architecture, node reference, launch guide
+- **[docs/system_architecture_and_improvements.md](./docs/system_architecture_and_improvements.md)** — Full system architecture, topic reference
 - **[docs/robot_architecture.md](./docs/robot_architecture.md)** — URDF, hardware specs, sensor configuration
 
 ---
