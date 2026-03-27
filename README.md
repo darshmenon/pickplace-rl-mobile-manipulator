@@ -142,22 +142,14 @@ The trained policy runs inside `manip_rl_node` at **20 Hz**:
 ros2 run pickplace_rl_mobile manip_rl_node --ros-args -p model_path:=./rl_models/best_model.zip
 ```
 
-### Fast Parallel Training
-
-To drastically accelerate sample collection, the Gazebo environment has been unlocked (`real_time_update_rate: 0`), allowing physics to run as fast as your CPU permits (often 5x-10x real-time).
-
-Multiple fully-isolated Gazebo worlds can be launched simultaneously using `multi_world_training.launch.py`. Each world runs in its own **GZ_PARTITION**, so Gz transport is completely isolated between instances. The bridge maps namespaced ROS topics (`/world_N/cmd_vel`, `/world_N/joint_states`, etc.) back to the bare Gz topics within each partition. Training uses `SubprocVecEnv` from Stable-Baselines3 so experience from all worlds feeds into one shared SAC replay buffer.
+### Training
 
 ```bash
-# 4 parallel worlds (default)
-ros2 launch pickplace_rl_mobile multi_world_training.launch.py
-
-# Custom number of worlds
-ros2 launch pickplace_rl_mobile multi_world_training.launch.py n_worlds:=2
-
-# Single world (original behaviour)
+# Single robot training (stable, recommended)
 ros2 launch pickplace_rl_mobile standalone_rl_training.launch.py
 ```
+
+**Multi-world parallel training** (`multi_world_training.launch.py`) is implemented but WIP — Gz plugin isolation via `GZ_PARTITION` requires further debugging before it is stable for production use.
 
 *Note: The environment is mathematically tuned so the autonomous chassis must approach within **0.4m** of the **20cm x 20cm** object bin. This guarantees the pickup target is exactly **0.25m** from the arm base—perfectly avoiding chassis collisions while keeping the grasp safely within the UR3's 0.5m envelope.*
 
