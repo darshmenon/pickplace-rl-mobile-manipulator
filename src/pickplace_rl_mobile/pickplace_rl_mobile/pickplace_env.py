@@ -169,8 +169,8 @@ class PickPlaceEnv(gym.Env):
         gripper_pos = self.joint_positions[6]  # finger_joint: 0=open, ~0.8=closed
         ee_global = self.get_global_ee_pos()
 
-        # Collision penalty: arm too low while not in lower/grasp/place phases
-        if ee_global[2] < 0.10 and self.current_phase not in [1, 2, 5]:
+        # Collision penalty: arm crashes into ground (very low)
+        if ee_global[2] < 0.03 and self.current_phase not in [1, 2, 5]:
             return -500.0, True
 
         if self.current_phase == 0:
@@ -203,6 +203,12 @@ class PickPlaceEnv(gym.Env):
             arm_speed = np.linalg.norm(self.joint_velocities[:6])
             if arm_speed < 0.05:
                 reward -= 1.0
+
+            # Encourage keeping the arm raised during approach (stay above 0.15m)
+            if ee_global[2] < 0.15:
+                reward -= 2.0  # gentle penalty for being too low during approach
+            elif ee_global[2] > 0.20:
+                reward += 0.5  # small bonus for good height
 
             # Phase 0 -> Phase 1 Transition: Base arrived, Arm hovering over target
             if arm_dist_xy < 0.10 and base_dist_xy < 0.8 and abs(angle_diff) < 0.5 and ee_global[2] > 0.15:
