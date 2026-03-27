@@ -200,12 +200,12 @@ class PickPlaceEnv(gym.Env):
             dist_xy = base_dist_xy + arm_dist_xy + abs(angle_diff) * 0.5
 
             if self.prev_distance is not None:
-                step_reward = (self.prev_distance - dist_xy) * 50.0
+                step_reward = (self.prev_distance - dist_xy) * 100.0
                 reward += step_reward
                 
                 # Heavily penalize moving AWAY from the target!
                 if dist_xy > self.prev_distance:
-                    reward -= 5.0
+                    reward -= 10.0
                     
             self.prev_distance = dist_xy
 
