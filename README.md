@@ -8,7 +8,7 @@
 
 > **Platform:** ROS2 Humble · Gazebo Harmonic · Ubuntu 22.04
 
-A mobile manipulator that learns pick-and-place **from scratch via RL** — no hand-coded trajectories, no demonstrations. A differential-drive base carries a 6-DOF UR3 arm with a Robotiq 2F-85 gripper. A scripted P-controller drives the base to the bin; **TQC** (upgraded from SAC) then learns all arm manipulation end-to-end.
+A mobile manipulator that learns pick-and-place **from scratch via RL** — no hand-coded trajectories, no demonstrations. A differential-drive base carries a 6-DOF UR3 arm with a Robotiq 2F-85 gripper. A scripted P-controller drives the base to the bin and extends the arm toward the object; **TQC** (upgraded from SAC) then learns all arm manipulation end-to-end.
 
 This project covers:
 - Mobile base + arm RL in a single policy
@@ -49,6 +49,12 @@ A scripted P-controller handles base navigation to the bin (~18cm from object). 
 
 Upgraded from SAC after 95k steps (SAC best: −328). TQC models the full return distribution per critic and drops the top quantiles before computing Bellman targets — this pessimistic bias reduces Q-value overestimation in contact-rich manipulation, giving more stable grasping behaviour.
 
+**Key hyperparameters:**
+- Policy network: `[512, 512, 512]` (3-layer, vs default 2×256 — needed for 24→9 dim mapping)
+- `gradient_steps=4` — 4 gradient updates per env step for sample efficiency
+- `VecNormalize` — online obs + reward normalisation across all 24 obs dimensions
+- `buffer_size=500000`, `batch_size=512`, `gamma=0.99`, `tau=0.005`
+
 ### Observation Space (24-dim)
 
 | Field | Dim | Description |
@@ -68,7 +74,7 @@ All quantities are in the **world frame** — no mixed frames that break relativ
 
 | Field | Dim | Description |
 |-------|-----|-------------|
-| `joint_deltas` | 6 | Position delta per arm joint (×0.05 rad/step) |
+| `joint_deltas` | 6 | Position delta per arm joint (±0.25 rad/step max, P-controlled) |
 | `gripper` | 1 | Close (>0) / open (<0) |
 | `base_linear` | 1 | Forward speed — locked to 0 during phases 1–3 |
 | `base_angular` | 1 | Turn speed — locked to 0 during phases 1–3 |
@@ -111,7 +117,8 @@ gripper-open penalty: -2/step if gripper closes in phase 1
 
 ```
 Episode reset
-    └── Scripted P-controller: drives base to 18cm from object, arm tucked
+    └── Scripted P-controller: drives base to ~18cm from object,
+        extends arm toward object (pan=0, shoulder=-1.7, elbow=2.0, wrist_1=-1.0)
             ↓
 RL policy (TQC, ~40 Hz)
     ├── Reads: joint_states, /odom, /world/.../dynamic_pose/info
@@ -175,12 +182,14 @@ Models saved to `./rl_models/`: checkpoints every 10k steps, `best_model.zip` up
 > Wall time ~4–14 hrs depending on whether CUDA is available (~40 fps GPU vs ~11 fps CPU).
 
 ### Current Status
-**TQC_30** running at ~38 fps. Key improvements vs SAC baseline:
-- Scripted pre-grasp (base stops 18cm from object)
-- Phase 1 requires XY + Z approach (not just Z lowering)
+**TQC_37+** running at ~38 fps. Key improvements vs SAC baseline:
+- Scripted pre-grasp extends arm toward object (shoulder=-1.7, elbow=2.0, wrist=-1.0)
+- Phase 1 requires XY + Z approach simultaneously (equal weight, not 0.5× XY)
 - Asymmetric retreat penalty (3–4× harsher than approach reward)
 - Touch-range and gripper-closing bonuses added
 - Grasp reward raised to +1000
+- VecNormalize for online observation normalisation
+- Larger network [512, 512, 512] + 4 gradient steps per env step
 
 ---
 

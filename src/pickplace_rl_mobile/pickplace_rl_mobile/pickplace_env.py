@@ -263,8 +263,8 @@ class PickPlaceEnv(gym.Env):
             # Phase 0 -> Phase 1 Transition:
             # Bin left-wall outer face is at x=0.405 (object_x - 0.195).
             # Robot should stop 2-5 cm from that wall → base ~0.22-0.25m from object.
-            # arm_dist_xy < 0.12 ensures arm is already extended toward target.
-            if arm_dist_xy < 0.12 and base_dist_xy < 0.25 and abs(angle_diff) < 0.5 and ee_global[2] > 0.15:
+            # arm_dist_xy < 0.08 ensures EE is already close toward target.
+            if arm_dist_xy < 0.08 and base_dist_xy < 0.25 and abs(angle_diff) < 0.5 and ee_global[2] > 0.15:
                 self.current_phase = 1
                 self.prev_distance = None
                 reward += 100.0
@@ -275,7 +275,7 @@ class PickPlaceEnv(gym.Env):
             dist_z = abs(ee_global[2] - grasp_z)
             dist_xy = np.linalg.norm(ee_global[:2] - obj_pos[:2])
             # Combined: reach grasp height + move EE toward object horizontally
-            dist_combined = dist_z + dist_xy * 0.5
+            dist_combined = dist_z + dist_xy * 1.0
             if self.prev_distance is not None:
                 delta = self.prev_distance - dist_combined
                 reward += delta * 100.0 if delta > 0 else delta * 300.0  # 3× harsher when retreating
@@ -297,7 +297,7 @@ class PickPlaceEnv(gym.Env):
             if gripper_pos > 0.5:
                 reward -= 2.0
 
-            # Transition when EE is at right height and close in XY
+            # Transition when EE is at right height and very close in XY
             if dist_z < 0.04 and dist_xy < 0.06:
                 self.current_phase = 2
                 self.prev_distance = None
@@ -326,11 +326,11 @@ class PickPlaceEnv(gym.Env):
                 reward += 8.0 * (1.0 - dist_to_target / 0.10)
 
             # Touch-range bonus: EE is basically at the object surface — reward heavily
-            if dist_to_obj < 0.05:
-                reward += 15.0 * (1.0 - dist_to_obj / 0.05)
+            if dist_to_obj < 0.04:
+                reward += 15.0 * (1.0 - dist_to_obj / 0.04)
 
             # Very close bonus: within 3cm is pre-grasp territory
-            if dist_to_obj < 0.03:
+            if dist_to_obj < 0.02:
                 reward += 10.0
 
             # Reward gripper closing when already near object (actively encourage grasping)
@@ -342,7 +342,7 @@ class PickPlaceEnv(gym.Env):
                 reward -= 5.0
 
             # Grasp fires when EE is within 5cm of object AND gripper closed
-            if gripper_pos > 0.7 and dist_to_obj < 0.05:
+            if gripper_pos > 0.7 and dist_to_obj < 0.04:
                 self.object_grasped = True
                 self.current_phase = 3
                 self.grasp_verify_steps = 0
@@ -427,8 +427,8 @@ class PickPlaceEnv(gym.Env):
         rclpy.spin_once(self.node, timeout_sec=0.005)
 
         # Position delta control: target = current + delta, then P-drive toward target.
-        # Max delta per step = 0.05 rad → fine manipulation without velocity explosion.
-        delta = action[:6] * 0.05
+        # Max delta per step = 0.25 rad → faster reach toward object.
+        delta = action[:6] * 0.25
         target_joints = self.joint_positions[:6] + delta
         # P-controller: velocity = (target - current) * gain, clamped to ±0.5 rad/s
         joint_vels = np.clip((target_joints - self.joint_positions[:6]) * 10.0, -0.5, 0.5)
@@ -475,10 +475,14 @@ class PickPlaceEnv(gym.Env):
 
     def _scripted_pregrasp(self):
         """
-        P-controller that drives the base to ~22cm from the object and tucks the arm.
+        Face the object, drive forward only until the front caster (at chassis_x + 0.36m)
+        would reach the bin back-wall (outer face ≈ 0.40m), then extend the arm.
         Runs for up to 300 steps before handing off to RL.
-        Target: base within 0.25m of object, facing it, arm raised.
         """
+        # Bin back-wall outer face ≈ 0.405m; caster front = chassis_x + 0.36m.
+        # Keep chassis_x ≤ 0.04m so the caster stays clear of the wall.
+        SAFE_CHASSIS_X = 0.04
+
         obj_pos = self.real_object_pos if self.real_object_pos is not None else self.object_pos
         for _ in range(300):
             rclpy.spin_once(self.node, timeout_sec=0.005)
@@ -487,14 +491,8 @@ class PickPlaceEnv(gym.Env):
             bx, by, btheta = self.base_pose
             dx = obj_pos[0] - bx
             dy = obj_pos[1] - by
-            dist = np.sqrt(dx * dx + dy * dy)
 
-            if dist < 0.18:
-                # Close enough — stop base (18cm, arm easily reaches object at this range)
-                self.cmd_vel_pub.publish(Twist())
-                break
-
-            # P-controller: turn to face object then drive forward
+            # P-controller: turn to face object
             angle_to = np.arctan2(dy, dx)
             angle_err = angle_to - btheta
             while angle_err > np.pi:  angle_err -= 2 * np.pi
@@ -502,12 +500,39 @@ class PickPlaceEnv(gym.Env):
 
             tw = Twist()
             tw.angular.z = float(np.clip(angle_err * 2.0, -1.0, 1.0))
-            tw.linear.x = float(np.clip((dist - 0.25) * 1.5, 0.0, 0.4)) if abs(angle_err) < 0.4 else 0.0
+
+            # Only drive forward if chassis x stays within the safe limit
+            if bx < SAFE_CHASSIS_X and abs(angle_err) < 0.4:
+                tw.linear.x = float(np.clip((SAFE_CHASSIS_X - bx) * 3.0, 0.0, 0.2))
+            else:
+                tw.linear.x = 0.0
             self.cmd_vel_pub.publish(tw)
 
-            # Fold arm back over base (shoulder up, elbow back) — CoM stays over rear wheels
-            self.shoulder_pitch_pub.publish(Float64(data=-0.4 if self.joint_positions[1] > -1.5 else 0.0))
-            self.elbow_pub.publish(Float64(data=-0.4 if self.joint_positions[2] > -1.5 else 0.0))
+            # Break once arm EE is within 0.30m XY of the object and robot is facing it
+            ee_global = self.get_global_ee_pos()
+            ee_dist_xy = np.linalg.norm(ee_global[:2] - obj_pos[:2])
+            if ee_dist_xy < 0.30 and abs(angle_err) < 0.4:
+                self.cmd_vel_pub.publish(Twist())
+                break
+
+            # Pre-grasp arm pose: extend arm forward toward the object.
+            # shoulder_pan=0 faces arm +x (chassis forward after 180° yaw flip).
+            # shoulder_lift=-1.7, elbow=2.0 extend the arm forward/down.
+            # wrist_1=-1.0 keeps gripper roughly horizontal for side-grasp.
+            pan_err = 0.0   - self.joint_positions[0]
+            s_err   = -1.7  - self.joint_positions[1]
+            e_err   =  2.0  - self.joint_positions[2]
+            w1_err  = -1.0  - self.joint_positions[3]
+
+            pan_vel = np.clip(pan_err * 2.0, -0.4, 0.4) if abs(pan_err) > 0.05 else 0.0
+            s_vel   = np.clip(s_err   * 2.0, -0.4, 0.4) if abs(s_err)   > 0.05 else 0.0
+            e_vel   = np.clip(e_err   * 2.0, -0.4, 0.4) if abs(e_err)   > 0.05 else 0.0
+            w1_vel  = np.clip(w1_err  * 2.0, -0.4, 0.4) if abs(w1_err)  > 0.05 else 0.0
+
+            self.shoulder_pub.publish(Float64(data=float(pan_vel)))
+            self.shoulder_pitch_pub.publish(Float64(data=float(s_vel)))
+            self.elbow_pub.publish(Float64(data=float(e_vel)))
+            self.wrist_1_pub.publish(Float64(data=float(w1_vel)))
             time.sleep(0.01)
 
         self.cmd_vel_pub.publish(Twist())
