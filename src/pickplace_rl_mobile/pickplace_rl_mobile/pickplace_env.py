@@ -165,12 +165,13 @@ class PickPlaceEnv(gym.Env):
 
     def get_observation(self) -> np.ndarray:
         ee_pos = self.get_end_effector_pos()
+        obj_pos = self.real_object_pos if self.real_object_pos is not None else self.object_pos
         obs = np.concatenate([
             self.joint_positions[:6],    # arm joint positions
             self.joint_velocities[:6],   # arm joint velocities
             [self.joint_positions[6]],   # finger_joint position
             ee_pos,
-            self.object_pos,
+            obj_pos,
             [float(self.object_grasped)],
             [float(self.current_phase)],
             self.base_pose,
@@ -198,12 +199,15 @@ class PickPlaceEnv(gym.Env):
         if ee_global[2] < 0.03 and self.current_phase not in [1, 2, 5]:
             return -500.0, True
 
+        # Use real Gazebo object position when available (fixes fake-randomisation bug)
+        obj_pos = self.real_object_pos if self.real_object_pos is not None else self.object_pos
+
         # Out-of-bounds penalty: robot wandered too far from target (avoid local optimum)
-        if np.linalg.norm(self.object_pos[:2] - self.base_pose[:2]) > 1.5:
+        if np.linalg.norm(obj_pos[:2] - self.base_pose[:2]) > 1.5:
             return -500.0, True
 
         if self.current_phase == 0:
-            target_xy = self.object_pos[:2]
+            target_xy = obj_pos[:2]
             ee_xy = ee_global[:2]
             base_xy = self.base_pose[:2]
             base_theta = self.base_pose[2]
@@ -221,7 +225,7 @@ class PickPlaceEnv(gym.Env):
             if self.prev_distance is not None:
                 step_reward = (self.prev_distance - dist_xy) * 100.0
                 reward += step_reward
-                    
+
             self.prev_distance = dist_xy
 
             # Penalize the standing still arm - force it to move toward the goal!
@@ -235,16 +239,19 @@ class PickPlaceEnv(gym.Env):
             elif ee_global[2] > 0.20:
                 reward += 0.5  # small bonus for good height
 
-            # Phase 0 -> Phase 1 Transition: Base arrived, Arm hovering over target
-            # UR3 reach is ~0.5m max. Force base to be within 0.4m before grasping!
-            if arm_dist_xy < 0.10 and base_dist_xy < 0.4 and abs(angle_diff) < 0.5 and ee_global[2] > 0.15:
+            # Phase 0 -> Phase 1 Transition:
+            # Bin left-wall outer face is at x=0.405 (object_x - 0.195).
+            # Robot should stop 2-5 cm from that wall → base ~0.22-0.25m from object.
+            # arm_dist_xy < 0.12 ensures arm is already extended toward target.
+            if arm_dist_xy < 0.12 and base_dist_xy < 0.25 and abs(angle_diff) < 0.5 and ee_global[2] > 0.15:
                 self.current_phase = 1
                 self.prev_distance = None
                 reward += 100.0
 
         elif self.current_phase == 1:
-            # Phase 1: Try to PICK! Moving straight down to the cube.
-            dist_z = abs(ee_global[2] - 0.07)
+            # Phase 1: Lower arm to grasp height (object top ≈ obj_z + cylinder_half_h = 0.065 + 0.04 = 0.105 → aim for object center z)
+            grasp_z = obj_pos[2] if obj_pos[2] > 0.03 else 0.065
+            dist_z = abs(ee_global[2] - grasp_z)
             if self.prev_distance is not None:
                 step_reward = (self.prev_distance - dist_z) * 50.0
                 reward += step_reward
