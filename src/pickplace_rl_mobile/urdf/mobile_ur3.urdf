@@ -45,11 +45,11 @@
       </geometry>
     </collision>
     <inertial>
-      <!-- 30kg heavy base, CoM shifted 8cm to rear to counterbalance UR3 arm -->
-      <origin xyz="-0.08 0 0.02" rpy="0 0 0" />
-      <mass value="30.0" />
-      <!-- ixx large to resist pitching (arm tipping robot forward) -->
-      <inertia ixx="5.0" ixy="0" ixz="0" iyy="5.0" iyz="0" izz="3.0" />
+      <!-- 60kg heavy base, CoM shifted 12cm to rear to counterbalance UR3 arm -->
+      <origin xyz="-0.12 0 0.02" rpy="0 0 0" />
+      <mass value="60.0" />
+      <!-- iyy very large to resist pitching (arm extending forward tips robot) -->
+      <inertia ixx="8.0" ixy="0" ixz="0" iyy="10.0" iyz="0" izz="5.0" />
     </inertial>
   </link>
   <link name="left_wheel">
@@ -138,7 +138,7 @@
   <joint name="front_caster_joint" type="fixed">
     <parent link="chassis_link" />
     <child link="front_caster" />
-    <origin xyz="0.22 0 -0.02" rpy="0 0 0" />
+    <origin xyz="0.30 0 -0.02" rpy="0 0 0" />
   </joint>
   <gazebo reference="front_caster">
     <mu1>0.0</mu1>

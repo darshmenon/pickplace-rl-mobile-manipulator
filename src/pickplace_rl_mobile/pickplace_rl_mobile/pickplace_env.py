@@ -484,9 +484,9 @@ class PickPlaceEnv(gym.Env):
             tw.linear.x = float(np.clip((dist - 0.25) * 1.5, 0.0, 0.4)) if abs(angle_err) < 0.4 else 0.0
             self.cmd_vel_pub.publish(tw)
 
-            # Keep arm tucked upright during navigation: command shoulder_lift up
-            self.shoulder_pitch_pub.publish(Float64(data=-0.3 if self.joint_positions[1] > -1.2 else 0.0))
-            self.elbow_pub.publish(Float64(data=0.3 if self.joint_positions[2] < 1.2 else 0.0))
+            # Fold arm back over base (shoulder up, elbow back) — CoM stays over rear wheels
+            self.shoulder_pitch_pub.publish(Float64(data=-0.4 if self.joint_positions[1] > -1.5 else 0.0))
+            self.elbow_pub.publish(Float64(data=-0.4 if self.joint_positions[2] > -1.5 else 0.0))
             time.sleep(0.01)
 
         self.cmd_vel_pub.publish(Twist())
