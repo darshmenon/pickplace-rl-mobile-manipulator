@@ -206,10 +206,6 @@ class PickPlaceEnv(gym.Env):
             if self.prev_distance is not None:
                 step_reward = (self.prev_distance - dist_xy) * 100.0
                 reward += step_reward
-                
-                # Heavily penalize moving AWAY from the target!
-                if dist_xy > self.prev_distance:
-                    reward -= 10.0
                     
             self.prev_distance = dist_xy
 
@@ -225,7 +221,8 @@ class PickPlaceEnv(gym.Env):
                 reward += 0.5  # small bonus for good height
 
             # Phase 0 -> Phase 1 Transition: Base arrived, Arm hovering over target
-            if arm_dist_xy < 0.10 and base_dist_xy < 0.8 and abs(angle_diff) < 0.5 and ee_global[2] > 0.15:
+            # UR3 reach is ~0.5m max. Force base to be within 0.4m before grasping!
+            if arm_dist_xy < 0.10 and base_dist_xy < 0.4 and abs(angle_diff) < 0.5 and ee_global[2] > 0.15:
                 self.current_phase = 1
                 self.prev_distance = None
                 reward += 100.0
