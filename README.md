@@ -83,6 +83,23 @@ tensorboard --logdir ./rl_models/tensorboard
 
 Checkpoints are saved to `./rl_models/` every 10 000 steps. The best model (by eval reward) is saved as `best_model.zip`.
 
+### 6-Phase Curriculum Learning
+
+The agent learns through **potential-based reward shaping** across 6 sequential phases. Each phase uses distance-difference rewards (`Δd × scale`) that create a dense gradient, preventing the agent from exploiting back-and-forth movement.
+
+| Phase | Goal | Transition Condition | Bonus |
+|-------|------|---------------------|-------|
+| **0: Approach** | Drive base + extend arm toward object | EE within 10cm XY, base aligned | +100 |
+| **1: Lower** | Descend EE to grasp height (z≈0.07m) | Vertical distance < 2cm | +100 |
+| **2: Grasp** | Close gripper fingers | Finger position > 0.7 | +500 |
+| **3: Lift** | Raise grasped object to safe height (z≈0.25m) | Vertical distance < 5cm | +200 |
+| **4: Transport** | Drive to final placement location | EE within 15cm of target | +100 |
+| **5: Place** | Lower and release object | Distance < 8cm, gripper open | +1000 |
+
+**Anti-regression penalties:** In Phases 0 and 1, the agent receives a `-5.0` penalty for moving away from the target and `-1.0` for keeping joints stationary. This prevents the common RL failure mode of oscillating or freezing.
+
+**Safety penalties:** Ground collision (EE z < 3cm) and base tipping (joint velocity spike > 10 rad/s) both terminate the episode with `-500`.
+
 ### Inference
 
 The trained policy runs inside `manip_rl_node` at **20 Hz**. It subscribes to live perception output (object pose from the VLA vision node) and publishes joint velocity commands + base `cmd_vel`.

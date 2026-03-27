@@ -161,21 +161,24 @@
       </link>
     </model>
 
-    <!-- Pickable Object (cube in bin) -->
+    <!-- Pickable Object (cylinder for easier grasping) -->
     <model name="pickup_object">
       <pose>0.6 0 0.055 0 0 0</pose>
       <link name="link">
         <inertial>
           <mass>0.05</mass>
           <inertia>
-            <ixx>0.00001</ixx>
-            <iyy>0.00001</iyy>
+            <ixx>0.00002</ixx>
+            <iyy>0.00002</iyy>
             <izz>0.00001</izz>
           </inertia>
         </inertial>
         <visual name="visual">
           <geometry>
-            <box><size>0.04 0.04 0.04</size></box>
+            <cylinder>
+              <radius>0.025</radius>
+              <length>0.08</length>
+            </cylinder>
           </geometry>
           <material>
             <ambient>1 0 0 1</ambient>
@@ -184,7 +187,10 @@
         </visual>
         <collision name="collision">
           <geometry>
-            <box><size>0.04 0.04 0.04</size></box>
+            <cylinder>
+              <radius>0.025</radius>
+              <length>0.08</length>
+            </cylinder>
           </geometry>
           <surface>
             <friction>

@@ -169,6 +169,16 @@ class PickPlaceEnv(gym.Env):
         gripper_pos = self.joint_positions[6]  # finger_joint: 0=open, ~0.8=closed
         ee_global = self.get_global_ee_pos()
 
+        # Base tipping penalty: if robot falls over, base height deviates significantly
+        # Normal base z is ~0.08 (spawn height). If it tilts, z changes dramatically.
+        base_z_deviation = abs(ee_global[2])  # check if EE goes underground
+        # Use odom-based check: if base is no longer upright
+        if len(self.joint_positions) > 0:
+            # If the arm joints show extreme values, the robot likely tipped
+            max_joint_vel = np.max(np.abs(self.joint_velocities[:6])) if len(self.joint_velocities) >= 6 else 0
+            if max_joint_vel > 10.0:  # abnormally high velocity = robot tumbling
+                return -500.0, True
+
         # Collision penalty: arm crashes into ground (very low)
         if ee_global[2] < 0.03 and self.current_phase not in [1, 2, 5]:
             return -500.0, True
