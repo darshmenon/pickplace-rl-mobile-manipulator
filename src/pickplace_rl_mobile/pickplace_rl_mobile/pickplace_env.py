@@ -274,19 +274,28 @@ class PickPlaceEnv(gym.Env):
 
         elif self.current_phase == 2:
             # Phase 2: Grasping the object
-            # Use real Gazebo object pos if available, else fall back to tracked pos.
             ref_obj = self.real_object_pos if self.real_object_pos is not None else self.object_pos
             dist_to_obj = np.linalg.norm(ee_global - ref_obj)
+
+            # Dense approach reward: pull EE toward object
+            if self.prev_distance is not None:
+                reward += (self.prev_distance - dist_to_obj) * 30.0
+            self.prev_distance = dist_to_obj
+
             if gripper_pos > 0.7 and dist_to_obj < 0.08:
                 self.object_grasped = True
                 self.current_phase = 3
                 self.grasp_verify_steps = 0
+                self.prev_distance = None
                 reward += 500.0
             elif gripper_pos > 0.7 and dist_to_obj >= 0.08:
-                # Closed on air — penalise (small, not per-step termination)
-                reward -= 0.5
-            else:
+                # Closed on air — tiny discouragement only
                 reward -= 0.1
+
+            # Wrist orientation reward: nudge gripper to horizontal (wrist_2 ≈ 0)
+            # so fingers are parallel to ground for side-grasp of cylinder
+            wrist_orient_err = abs(self.joint_positions[4])  # wrist_2_joint
+            reward -= wrist_orient_err * 0.3
 
         elif self.current_phase == 3:
             # Verify grasp: real object should rise with EE; if it stays on the floor, abort.
