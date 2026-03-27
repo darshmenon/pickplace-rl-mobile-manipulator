@@ -171,7 +171,7 @@ class PickPlaceEnv(gym.Env):
 
         # Collision penalty: arm too low while not in lower/grasp/place phases
         if ee_global[2] < 0.10 and self.current_phase not in [1, 2, 5]:
-            return -100.0, True
+            return -500.0, True
 
         if self.current_phase == 0:
             target_xy = self.object_pos[:2]
@@ -190,62 +190,62 @@ class PickPlaceEnv(gym.Env):
             dist_xy = base_dist_xy + arm_dist_xy + abs(angle_diff) * 0.5
 
             if self.prev_distance is not None:
-                reward += (self.prev_distance - dist_xy) * 10.0
+                reward += (self.prev_distance - dist_xy) * 50.0
             self.prev_distance = dist_xy
 
             if arm_dist_xy < 0.10 and base_dist_xy < 0.8 and abs(angle_diff) < 0.5 and ee_global[2] > 0.15:
                 self.current_phase = 1
                 self.prev_distance = None
-                reward += 20.0
+                reward += 50.0
 
         elif self.current_phase == 1:
             dist_z = abs(ee_global[2] - 0.07)
             if self.prev_distance is not None:
-                reward += (self.prev_distance - dist_z) * 10.0
+                reward += (self.prev_distance - dist_z) * 50.0
             self.prev_distance = dist_z
             if dist_z < 0.02:
                 self.current_phase = 2
                 self.prev_distance = None
-                reward += 20.0
+                reward += 50.0
 
         elif self.current_phase == 2:
             if gripper_pos > 0.7:
                 self.object_grasped = True
                 self.current_phase = 3
-                reward += 50.0
+                reward += 500.0
             else:
                 reward -= 0.1
 
         elif self.current_phase == 3:
             dist_z = abs(ee_global[2] - 0.25)
             if self.prev_distance is not None:
-                reward += (self.prev_distance - dist_z) * 10.0
+                reward += (self.prev_distance - dist_z) * 50.0
             self.prev_distance = dist_z
             if dist_z < 0.05:
                 self.current_phase = 4
                 self.prev_distance = None
-                reward += 20.0
+                reward += 200.0
 
         elif self.current_phase == 4:
             target_xy = self.target_pos[:2]
             ee_xy = ee_global[:2]
             dist_xy = np.linalg.norm(target_xy - ee_xy) + np.linalg.norm(target_xy - self.base_pose[:2])
             if self.prev_distance is not None:
-                reward += (self.prev_distance - dist_xy) * 10.0
+                reward += (self.prev_distance - dist_xy) * 50.0
             self.prev_distance = dist_xy
             if np.linalg.norm(target_xy - ee_xy) < 0.15:
                 self.current_phase = 5
                 self.prev_distance = None
-                reward += 50.0
+                reward += 100.0
 
         elif self.current_phase == 5:
             dist = np.linalg.norm(ee_global - self.target_pos)
             if self.prev_distance is not None:
-                reward += (self.prev_distance - dist) * 10.0
+                reward += (self.prev_distance - dist) * 50.0
             self.prev_distance = dist
             if dist < 0.08 and gripper_pos < 0.1:
                 self.object_grasped = False
-                reward += 100.0
+                reward += 500.0
                 terminated = True
 
         reward -= 0.01 * np.sum(np.abs(self.joint_velocities[:6]))
