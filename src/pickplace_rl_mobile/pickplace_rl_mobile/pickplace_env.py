@@ -55,8 +55,12 @@ class PickPlaceEnv(gym.Env):
     """
     Gymnasium environment for pick-and-place RL training.
 
-    Observation (24): [joint_pos(6), joint_vel(6), finger_pos(1), ee_pos(3), obj_pos(3), grasped(1), phase(1), base_pose(3)]
+    Observation (27): [joint_pos(6), joint_vel(6), finger_pos(1), ee_pos(3), obj_pos(3),
+                       ee_to_obj(3), grasped(1), phase(1), base_pose(3)]
     Action (9):       [joint_vels(6), gripper(1), base_linear(1), base_angular(1)]
+
+    ee_to_obj = obj_pos - ee_pos is the direct tracking vector: if the object moves,
+    this immediately reflects the new direction/distance the arm needs to travel.
     """
 
     def __init__(self, namespace='', ros_domain_id=None, gz_partition=None):
@@ -85,11 +89,12 @@ class PickPlaceEnv(gym.Env):
             dtype=np.float32
         )
 
-        # Observation space: 6 joint pos + 6 joint vel + 1 finger pos + 3 ee + 3 obj + 1 grasped + 1 phase + 3 base pose
+        # Observation space: 6 joint pos + 6 joint vel + 1 finger pos + 3 ee + 3 obj
+        #                  + 3 ee_to_obj + 1 grasped + 1 phase + 3 base pose  = 27
         self.observation_space = spaces.Box(
             low=-np.inf,
             high=np.inf,
-            shape=(24,),
+            shape=(27,),
             dtype=np.float32
         )
 
@@ -180,15 +185,19 @@ class PickPlaceEnv(gym.Env):
         return np.array([gx, gy, gz])
 
     def get_observation(self) -> np.ndarray:
-        # Use global EE so all positional quantities are in the same world frame
+        # Spin once here to get the freshest object pose before building the obs
+        rclpy.spin_once(self.node, timeout_sec=0.001)
         ee_pos = self.get_global_ee_pos()
         obj_pos = self.real_object_pos if self.real_object_pos is not None else self.object_pos
+        # ee_to_obj: direct tracking vector — if the object moves, this updates instantly
+        ee_to_obj = obj_pos - ee_pos
         obs = np.concatenate([
             self.joint_positions[:6],    # arm joint positions
             self.joint_velocities[:6],   # arm joint velocities
             [self.joint_positions[6]],   # finger_joint position
-            ee_pos,                      # EE in world frame (consistent with obj_pos)
-            obj_pos,
+            ee_pos,                      # EE in world frame
+            obj_pos,                     # object in world frame (live from Gazebo bridge)
+            ee_to_obj,                   # vector from EE to object — arm tracks this to zero
             [float(self.object_grasped)],
             [float(self.current_phase)],
             self.base_pose,

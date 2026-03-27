@@ -3,10 +3,27 @@
 import argparse
 import os
 from sb3_contrib import TQC
-from stable_baselines3.common.callbacks import CheckpointCallback, EvalCallback
+from stable_baselines3.common.callbacks import CheckpointCallback, EvalCallback, BaseCallback
 from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.vec_env import SubprocVecEnv, DummyVecEnv, VecNormalize
 from pickplace_rl_mobile.pickplace_env import PickPlaceEnv
+
+
+class SaveVecNormalizeCallback(BaseCallback):
+    """Save VecNormalize stats alongside every model checkpoint so training
+    can be resumed without losing observation/reward normalisation."""
+
+    def __init__(self, save_path: str, save_freq: int):
+        super().__init__()
+        self.save_path = save_path
+        self.save_freq = save_freq
+
+    def _on_step(self) -> bool:
+        if self.num_timesteps % self.save_freq == 0:
+            path = os.path.join(self.save_path, 'vecnormalize.pkl')
+            if isinstance(self.training_env, VecNormalize):
+                self.training_env.save(path)
+        return True
 
 
 def make_env(ros_domain_id=None, gz_partition=None):
@@ -58,11 +75,13 @@ def train(total_timesteps=500000, save_dir='./models', n_envs=1, load_model=None
         eval_env = VecNormalize(raw_eval, norm_obs=True, norm_reward=False, clip_obs=10.0)
         eval_env.training = False
 
+    ckpt_freq = max(10000 // n_envs, 1)
     checkpoint_callback = CheckpointCallback(
-        save_freq=max(10000 // n_envs, 1),
+        save_freq=ckpt_freq,
         save_path=save_dir,
         name_prefix='pickplace_model'
     )
+    vecnorm_callback = SaveVecNormalizeCallback(save_path=save_dir, save_freq=ckpt_freq)
 
     eval_callback = EvalCallback(
         eval_env,
@@ -107,7 +126,7 @@ def train(total_timesteps=500000, save_dir='./models', n_envs=1, load_model=None
     print(f"Starting TQC training for {total_timesteps} timesteps across {n_envs} env(s)...")
     model.learn(
         total_timesteps=total_timesteps,
-        callback=[checkpoint_callback, eval_callback],
+        callback=[checkpoint_callback, vecnorm_callback, eval_callback],
         progress_bar=True
     )
 

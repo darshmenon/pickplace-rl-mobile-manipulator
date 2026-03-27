@@ -160,32 +160,29 @@
       </link>
     </model>
 
-    <!-- Pickable Object: r=0.04m, h=0.08m — fits Robotiq 2F-85 (max 8.5cm), puck shape resists tipping -->
+    <!-- Pickable Object: 8x8x8 cm box — flat faces give reliable gripper contact -->
     <model name="pickup_object">
       <pose>0.6 0 0.065 0 0 0</pose>
       <link name="link">
         <inertial>
-          <!-- 500g solid cylinder: r=0.04m, h=0.08m
-               Ixx=Iyy = m*(3r²+h²)/12 = 0.5*(3*0.0016+0.0064)/12 ≈ 0.000467
-               Izz     = m*r²/2        = 0.5*0.0016/2             ≈ 0.0004 -->
+          <!-- 500g solid cube: side=0.08m
+               Ixx=Iyy=Izz = m*(a²+b²)/12 = 0.5*(0.0064+0.0064)/12 ≈ 0.000533 -->
           <mass>0.5</mass>
           <inertia>
-            <ixx>0.000467</ixx>
-            <iyy>0.000467</iyy>
-            <izz>0.0004</izz>
+            <ixx>0.000533</ixx>
+            <iyy>0.000533</iyy>
+            <izz>0.000533</izz>
           </inertia>
         </inertial>
-        <!-- Damping prevents the cylinder from spinning freely on collision -->
         <velocity_decay>
           <linear>0.5</linear>
           <angular>1.0</angular>
         </velocity_decay>
         <visual name="visual">
           <geometry>
-            <cylinder>
-              <radius>0.04</radius>
-              <length>0.08</length>
-            </cylinder>
+            <box>
+              <size>0.08 0.08 0.08</size>
+            </box>
           </geometry>
           <material>
             <ambient>1 0 0 1</ambient>
@@ -194,10 +191,9 @@
         </visual>
         <collision name="collision">
           <geometry>
-            <cylinder>
-              <radius>0.04</radius>
-              <length>0.08</length>
-            </cylinder>
+            <box>
+              <size>0.08 0.08 0.08</size>
+            </box>
           </geometry>
           <surface>
             <friction>
