@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import os
 import subprocess
 import numpy as np
 import gymnasium as gym
@@ -58,8 +59,14 @@ class PickPlaceEnv(gym.Env):
     Action (9):       [joint_vels(6), gripper(1), base_linear(1), base_angular(1)]
     """
 
-    def __init__(self, namespace=''):
+    def __init__(self, namespace='', ros_domain_id=None, gz_partition=None):
         super().__init__()
+
+        # Must be set before rclpy.init() so the node joins the right domain
+        if ros_domain_id is not None:
+            os.environ['ROS_DOMAIN_ID'] = str(ros_domain_id)
+        if gz_partition is not None:
+            os.environ['GZ_PARTITION'] = gz_partition
 
         if not rclpy.ok():
             rclpy.init()

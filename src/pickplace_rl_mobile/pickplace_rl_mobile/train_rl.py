@@ -9,36 +9,39 @@ from stable_baselines3.common.vec_env import SubprocVecEnv, DummyVecEnv
 from pickplace_rl_mobile.pickplace_env import PickPlaceEnv
 
 
-def make_env(namespace=''):
+def make_env(ros_domain_id=None, gz_partition=None):
     """Factory that returns a thunk creating a monitored PickPlaceEnv."""
     def _init():
-        env = PickPlaceEnv(namespace=namespace)
+        env = PickPlaceEnv(ros_domain_id=ros_domain_id, gz_partition=gz_partition)
         return Monitor(env)
     return _init
 
 
-def train(total_timesteps=500000, save_dir='./models', n_envs=1):
-    """
-    Train a SAC agent for pick-and-place task.
+# Base ROS domain ID for parallel worlds (20-29 avoids conflict with default 0)
+_MULTI_WORLD_BASE_DOMAIN = 20
 
-    Args:
-        total_timesteps: Total training timesteps
-        save_dir: Directory to save models
-        n_envs: Number of parallel Gazebo worlds to train on
-    """
+
+def train(total_timesteps=500000, save_dir='./models', n_envs=1):
     os.makedirs(save_dir, exist_ok=True)
 
     print(f"Creating {n_envs} parallel pick-and-place environment(s)...")
     if n_envs > 1:
-        # Each world uses namespace 'world_0', 'world_1', ... matching the
-        # multi_world_training launch file which sets GZ_PARTITION per instance.
-        namespaces = [f'world_{i}' for i in range(n_envs)]
-        env = SubprocVecEnv([make_env(ns) for ns in namespaces])
+        # Each worker gets its own ROS domain + GZ partition for full isolation.
+        # SubprocVecEnv runs each env in a separate OS process, so os.environ
+        # set inside _init() is safe and doesn't affect other workers.
+        env = SubprocVecEnv([
+            make_env(ros_domain_id=_MULTI_WORLD_BASE_DOMAIN + i,
+                     gz_partition=f'sim_{i}')
+            for i in range(n_envs)
+        ])
     else:
         env = DummyVecEnv([make_env()])
 
-    # Single eval env (no namespace = connects to the default single world)
-    eval_env = DummyVecEnv([make_env(f'world_0' if n_envs > 1 else '')])
+    # Eval env: single world, uses same domain as env 0 if multi
+    eval_env = DummyVecEnv([
+        make_env(ros_domain_id=_MULTI_WORLD_BASE_DOMAIN if n_envs > 1 else None,
+                 gz_partition='sim_0' if n_envs > 1 else None)
+    ])
 
     checkpoint_callback = CheckpointCallback(
         save_freq=max(10000 // n_envs, 1),
