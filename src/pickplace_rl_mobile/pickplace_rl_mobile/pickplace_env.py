@@ -185,8 +185,6 @@ class PickPlaceEnv(gym.Env):
         return np.array([gx, gy, gz])
 
     def get_observation(self) -> np.ndarray:
-        # Spin once here to get the freshest object pose before building the obs
-        rclpy.spin_once(self.node, timeout_sec=0.001)
         ee_pos = self.get_global_ee_pos()
         obj_pos = self.real_object_pos if self.real_object_pos is not None else self.object_pos
         # ee_to_obj: direct tracking vector — if the object moves, this updates instantly
