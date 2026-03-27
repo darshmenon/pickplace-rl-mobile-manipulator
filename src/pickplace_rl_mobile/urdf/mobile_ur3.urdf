@@ -114,28 +114,28 @@
     <axis xyz="0 1 0" />
   </joint>
 
-  <!-- Front Passive Caster -->
+  <!-- Front Passive Caster (small sphere, zero friction) -->
   <link name="front_caster">
     <visual>
       <geometry>
-        <sphere radius="0.08" />
+        <sphere radius="0.04" />
       </geometry>
       <material name="black" />
     </visual>
     <collision>
       <geometry>
-        <sphere radius="0.08" />
+        <sphere radius="0.04" />
       </geometry>
     </collision>
     <inertial>
-      <mass value="0.5" />
-      <inertia ixx="0.001" ixy="0" ixz="0" iyy="0.001" iyz="0" izz="0.001" />
+      <mass value="0.2" />
+      <inertia ixx="0.0001" ixy="0" ixz="0" iyy="0.0001" iyz="0" izz="0.0001" />
     </inertial>
   </link>
   <joint name="front_caster_joint" type="fixed">
     <parent link="chassis_link" />
     <child link="front_caster" />
-    <origin xyz="0.35 0 0" rpy="0 0 0" />
+    <origin xyz="0.20 0 -0.04" rpy="0 0 0" />
   </joint>
   <gazebo reference="front_caster">
     <mu1>0.0</mu1>
@@ -144,28 +144,28 @@
     <material>Gazebo/Black</material>
   </gazebo>
 
-  <!-- Rear Passive Caster -->
+  <!-- Rear Passive Caster (small sphere, zero friction) -->
   <link name="rear_caster">
     <visual>
       <geometry>
-        <sphere radius="0.08" />
+        <sphere radius="0.04" />
       </geometry>
       <material name="black" />
     </visual>
     <collision>
       <geometry>
-        <sphere radius="0.08" />
+        <sphere radius="0.04" />
       </geometry>
     </collision>
     <inertial>
-      <mass value="0.5" />
-      <inertia ixx="0.001" ixy="0" ixz="0" iyy="0.001" iyz="0" izz="0.001" />
+      <mass value="0.2" />
+      <inertia ixx="0.0001" ixy="0" ixz="0" iyy="0.0001" iyz="0" izz="0.0001" />
     </inertial>
   </link>
   <joint name="rear_caster_joint" type="fixed">
     <parent link="chassis_link" />
     <child link="rear_caster" />
-    <origin xyz="-0.15 0 0" rpy="0 0 0" />
+    <origin xyz="-0.20 0 -0.04" rpy="0 0 0" />
   </joint>
   <gazebo reference="rear_caster">
     <mu1>0.0</mu1>

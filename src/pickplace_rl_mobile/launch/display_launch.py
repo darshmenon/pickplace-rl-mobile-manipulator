@@ -12,7 +12,7 @@ def generate_launch_description():
     pkg_dir = get_package_share_directory('pickplace_rl_mobile')
     
     # Get the URDF file path
-    urdf_file = os.path.join(pkg_dir, 'urdf', 'pickplace_mobile_arm.urdf')
+    urdf_file = os.path.join(pkg_dir, 'urdf', 'mobile_ur3.urdf')
     
     # Use Command to process URDF (in case there are any xacro macros)
     robot_description_content = Command(['cat ', urdf_file])
