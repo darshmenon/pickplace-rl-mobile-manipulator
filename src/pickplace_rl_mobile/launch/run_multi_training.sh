@@ -63,17 +63,23 @@ BRIDGE_TOPICS=(
     '/world/pickplace_world/dynamic_pose/info@tf2_msgs/msg/TFMessage[gz.msgs.Pose_V'
 )
 
-echo "Launching $N_WORLDS headless Gazebo worlds..."
+echo "Launching $N_WORLDS Gazebo worlds (world 0 with GUI, rest headless)..."
 
 for i in $(seq 0 $((N_WORLDS - 1))); do
     DOMAIN=$((i + 20))
     PARTITION="sim_$i"
     echo "  World $i: ROS_DOMAIN_ID=$DOMAIN  GZ_PARTITION=$PARTITION"
 
-    # Headless Gazebo server (-s = server only, no GUI)
+    # World 0 gets GUI so you can watch; rest are headless servers (-s)
+    if [ "$i" -eq 0 ]; then
+        GZ_FLAGS="-r -v 1"
+    else
+        GZ_FLAGS="-s -r -v 1"
+    fi
+
     ROS_DOMAIN_ID=$DOMAIN GZ_PARTITION=$PARTITION \
     GZ_SIM_RESOURCE_PATH="$GZ_RESOURCE" IGN_GAZEBO_RESOURCE_PATH="$GZ_RESOURCE" \
-        gz sim -s -r -v 1 "$WORLD_FILE" \
+        gz sim $GZ_FLAGS "$WORLD_FILE" \
         &> /tmp/gz_world_${i}.log &
 
     sleep 10  # Wait for physics server to be ready

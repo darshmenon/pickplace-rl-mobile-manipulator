@@ -5,12 +5,9 @@
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-green)](https://python.org)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-An **autonomous mobile manipulator** combining a differential-drive base with a 6-DOF UR3-based arm for open-vocabulary pick-and-place. The system has two complementary control paths:
+Mobile manipulator learning pick-and-place via deep RL — no hand-coded trajectories. A differential-drive base carries a UR3 arm; a **TQC policy** controls the arm end-to-end from a scripted pre-grasp position to object lift and placement.
 
-- **Reinforcement Learning (TQC)** — a trained policy for direct low-level arm and base control, running at 20 Hz
-- **VLA (Vision-Language-Action) pipeline** — language understanding + open-vocabulary vision + task planning, driving MoveIt2 for high-level task execution
-
-Both run on top of **Nav2 + SLAM** for autonomous navigation. The mobile base relies on a specialized 4-point differential drive configuration featuring zero-friction caster wheels to support the mass of the 6-DOF UR3 manipulator. Visual observations are captured securely through a static environment camera to avoid jitter.
+**Training highlights:** phase-curriculum reward shaping · real Gazebo object pose feedback · position-delta arm control · 24-dim obs / 9-dim action · ~35 Hz on a single Gazebo Harmonic world
 
 ![Robot Model](./images/gazebo_robot.png)
 ![New Mobile UR3 Robot](./images/new_mobile_ur3.png)

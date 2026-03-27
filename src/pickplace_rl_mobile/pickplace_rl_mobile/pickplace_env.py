@@ -62,6 +62,8 @@ class PickPlaceEnv(gym.Env):
     def __init__(self, namespace='', ros_domain_id=None, gz_partition=None):
         super().__init__()
 
+        self.gz_partition = gz_partition  # stored for subprocess calls (e.g. _spawn_object)
+
         # Must be set before rclpy.init() so the node joins the right domain
         if ros_domain_id is not None:
             os.environ['ROS_DOMAIN_ID'] = str(ros_domain_id)
@@ -267,14 +269,18 @@ class PickPlaceEnv(gym.Env):
                 reward += 100.0
 
         elif self.current_phase == 1:
-            # Phase 1: Lower arm to grasp height
+            # Phase 1: Lower arm to grasp height AND approach object XY
             grasp_z = obj_pos[2] if obj_pos[2] > 0.03 else 0.065
             dist_z = abs(ee_global[2] - grasp_z)
+            dist_xy = np.linalg.norm(ee_global[:2] - obj_pos[:2])
+            # Combined: reach grasp height + move EE toward object horizontally
+            dist_combined = dist_z + dist_xy * 0.5
             if self.prev_distance is not None:
-                reward += (self.prev_distance - dist_z) * 50.0
-            self.prev_distance = dist_z
+                reward += (self.prev_distance - dist_combined) * 50.0
+            self.prev_distance = dist_combined
 
-            if dist_z < 0.02:
+            # Transition when EE is at right height and close in XY
+            if dist_z < 0.05 and dist_xy < 0.12:
                 self.current_phase = 2
                 self.prev_distance = None
                 reward += 100.0
@@ -312,7 +318,7 @@ class PickPlaceEnv(gym.Env):
                     # Object didn't lift — grasp failed, go back to phase 2
                     self.object_grasped = False
                     self.current_phase = 2
-                    reward -= 50.0
+                    reward -= 10.0
             dist_z = abs(ee_global[2] - 0.25)
             if self.prev_distance is not None:
                 reward += (self.prev_distance - dist_z) * 50.0
@@ -458,11 +464,14 @@ class PickPlaceEnv(gym.Env):
     def _spawn_object(self, x, y, z):
         """Move the Gazebo pickup_object to (x, y, z) via gz service."""
         req = f'name: "pickup_object" position: {{x: {x:.4f}, y: {y:.4f}, z: {z:.4f}}} orientation: {{w: 1}}'
+        env = os.environ.copy()
+        if self.gz_partition:
+            env['GZ_PARTITION'] = self.gz_partition
         subprocess.run(
             ['gz', 'service', '-s', '/world/pickplace_world/set_pose',
              '--reqtype', 'gz.msgs.Pose', '--reptype', 'gz.msgs.Boolean',
              '--timeout', '2000', '--req', req],
-            capture_output=True
+            env=env, capture_output=True
         )
 
     def reset(self, seed=None, **kwargs):
