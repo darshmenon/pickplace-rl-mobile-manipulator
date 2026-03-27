@@ -56,13 +56,15 @@ class PickPlaceEnv(gym.Env):
     Action (9):       [joint_vels(6), gripper(1), base_linear(1), base_angular(1)]
     """
 
-    def __init__(self):
+    def __init__(self, namespace=''):
         super().__init__()
 
         if not rclpy.ok():
             rclpy.init()
 
-        self.node = Node('pickplace_env_node')
+        # namespace is used for multi-world parallel training (e.g. 'world_0', 'world_1')
+        node_name = f'pickplace_env_{namespace}' if namespace else 'pickplace_env_node'
+        self.node = Node(node_name, namespace=namespace)
 
         # Action space: 6 arm joints + 1 gripper + 2 base (linear, angular)
         self.action_space = spaces.Box(
@@ -80,23 +82,23 @@ class PickPlaceEnv(gym.Env):
             dtype=np.float32
         )
 
-        # Publishers
-        self.cmd_vel_pub = self.node.create_publisher(Twist, '/cmd_vel', 10)
+        # Publishers — relative topic names are prefixed by namespace automatically
+        self.cmd_vel_pub = self.node.create_publisher(Twist, 'cmd_vel', 10)
 
         # Joint velocity publishers — topic names match URDF JointController plugin
-        self.shoulder_pub       = self.node.create_publisher(Float64, '/shoulder_pan_joint/cmd_vel', 10)
-        self.shoulder_pitch_pub = self.node.create_publisher(Float64, '/shoulder_lift_joint/cmd_vel', 10)
-        self.elbow_pub          = self.node.create_publisher(Float64, '/elbow_joint/cmd_vel', 10)
-        self.wrist_1_pub        = self.node.create_publisher(Float64, '/wrist_1_joint/cmd_vel', 10)
-        self.wrist_2_pub        = self.node.create_publisher(Float64, '/wrist_2_joint/cmd_vel', 10)
-        self.wrist_3_pub        = self.node.create_publisher(Float64, '/wrist_3_joint/cmd_vel', 10)
-        self.finger_pub         = self.node.create_publisher(Float64, '/finger_joint/cmd_vel', 10)
+        self.shoulder_pub       = self.node.create_publisher(Float64, 'shoulder_pan_joint/cmd_vel', 10)
+        self.shoulder_pitch_pub = self.node.create_publisher(Float64, 'shoulder_lift_joint/cmd_vel', 10)
+        self.elbow_pub          = self.node.create_publisher(Float64, 'elbow_joint/cmd_vel', 10)
+        self.wrist_1_pub        = self.node.create_publisher(Float64, 'wrist_1_joint/cmd_vel', 10)
+        self.wrist_2_pub        = self.node.create_publisher(Float64, 'wrist_2_joint/cmd_vel', 10)
+        self.wrist_3_pub        = self.node.create_publisher(Float64, 'wrist_3_joint/cmd_vel', 10)
+        self.finger_pub         = self.node.create_publisher(Float64, 'finger_joint/cmd_vel', 10)
 
         # Subscribers
         self.joint_state_sub = self.node.create_subscription(
-            JointState, '/joint_states', self.joint_state_callback, 10)
+            JointState, 'joint_states', self.joint_state_callback, 10)
         self.odom_sub = self.node.create_subscription(
-            Odometry, '/odom', self.odom_callback, 10)
+            Odometry, 'odom', self.odom_callback, 10)
 
         # State variables
         # JointStatePublisher order: shoulder_pan[0], shoulder_lift[1], elbow[2],

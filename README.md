@@ -142,6 +142,22 @@ The trained policy runs inside `manip_rl_node` at **20 Hz**:
 ros2 run pickplace_rl_mobile manip_rl_node --ros-args -p model_path:=./rl_models/best_model.zip
 ```
 
+### Fast Parallel Training 🚀
+
+To drastically accelerate sample collection, the Gazebo environment has been unlocked (`real_time_update_rate: 0`), allowing physics to run as fast as your CPU permits (often 5x-10x real-time).
+
+You can launch multiple separate environments simultaneously. The script automatically isolates them using `ROS_DOMAIN_ID` and different Gazebo partitions:
+
+```bash
+# Run 4 parallel environments in the background
+./src/pickplace_rl_mobile/launch/run_parallel_training.sh 4
+```
+
+*Note: The environment is mathematically tuned so the autonomous chassis must approach within **0.4m** of the **20cm x 20cm** object bin. This guarantees the pickup target is exactly **0.25m** from the arm base—perfectly avoiding chassis collisions while keeping the grasp safely within the UR3's 0.5m envelope.*
+
+### Current Training Status (Active)
+The SAC policy has currently completed **~50,000 timesteps** of active training. It has successfully overcome early local optima (fleeing the target) and is now consistently and accurately driving the mobile base to the optimal 0.4m approach distance.
+
 ---
 
 ## Architecture
