@@ -154,7 +154,7 @@ ros2 launch pickplace_rl_mobile standalone_rl_training.launch.py
 *Note: The environment is mathematically tuned so the autonomous chassis must approach within **0.4m** of the **20cm x 20cm** object bin. This guarantees the pickup target is exactly **0.25m** from the arm base—perfectly avoiding chassis collisions while keeping the grasp safely within the UR3's 0.5m envelope.*
 
 ### Current Training Status (Active)
-The SAC policy has currently completed **~50,000 timesteps** of active training. It has successfully overcome early local optima (fleeing the target) and is now consistently and accurately driving the mobile base to the optimal 0.4m approach distance.
+The SAC policy has completed **~95,000 timesteps** across 32 training runs. Best eval reward so far: **−328** (phase 0→1 approach behaviour is emerging). The robot consistently drives toward the object and begins arm extension. Cylinder physics have been hardened (500g, r=3.5cm, damping added) to prevent tipping on contact.
 
 ---
 
