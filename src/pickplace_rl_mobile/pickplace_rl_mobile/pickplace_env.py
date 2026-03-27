@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import subprocess
 import numpy as np
 import gymnasium as gym
 from gymnasium import spaces
@@ -259,16 +260,11 @@ class PickPlaceEnv(gym.Env):
                 reward += 100.0
 
         elif self.current_phase == 1:
-            # Phase 1: Lower arm to grasp height (object top ≈ obj_z + cylinder_half_h = 0.065 + 0.04 = 0.105 → aim for object center z)
+            # Phase 1: Lower arm to grasp height
             grasp_z = obj_pos[2] if obj_pos[2] > 0.03 else 0.065
             dist_z = abs(ee_global[2] - grasp_z)
             if self.prev_distance is not None:
-                step_reward = (self.prev_distance - dist_z) * 50.0
-                reward += step_reward
-                
-                # Punish moving away (back upwards)!
-                if dist_z > self.prev_distance:
-                    reward -= 5.0
+                reward += (self.prev_distance - dist_z) * 50.0
             self.prev_distance = dist_z
 
             if dist_z < 0.02:
@@ -287,8 +283,8 @@ class PickPlaceEnv(gym.Env):
                 self.grasp_verify_steps = 0
                 reward += 500.0
             elif gripper_pos > 0.7 and dist_to_obj >= 0.08:
-                # Closed on air — penalise
-                reward -= 2.0
+                # Closed on air — penalise (small, not per-step termination)
+                reward -= 0.5
             else:
                 reward -= 0.1
 
@@ -357,10 +353,22 @@ class PickPlaceEnv(gym.Env):
     def step(self, action):
         rclpy.spin_once(self.node, timeout_sec=0.01)
 
-        joint_vels = action[:6] * 0.3
+        # Position delta control: target = current + delta, then P-drive toward target.
+        # Max delta per step = 0.05 rad → fine manipulation without velocity explosion.
+        delta = action[:6] * 0.05
+        target_joints = self.joint_positions[:6] + delta
+        # P-controller: velocity = (target - current) * gain, clamped to ±0.5 rad/s
+        joint_vels = np.clip((target_joints - self.joint_positions[:6]) * 10.0, -0.5, 0.5)
+
         gripper_command = action[6]
-        base_linear_vel = action[7] * 0.5
-        base_angular_vel = action[8] * 1.0
+
+        # Zero base during manipulation phases (1-3) to preserve scripted approach pose
+        if self.current_phase in [1, 2, 3]:
+            base_linear_vel = 0.0
+            base_angular_vel = 0.0
+        else:
+            base_linear_vel = float(action[7]) * 0.5
+            base_angular_vel = float(action[8]) * 1.0
 
         self.shoulder_pub.publish(Float64(data=float(joint_vels[0])))
         self.shoulder_pitch_pub.publish(Float64(data=float(joint_vels[1])))
@@ -373,8 +381,8 @@ class PickPlaceEnv(gym.Env):
         self.finger_pub.publish(Float64(data=gripper_vel))
 
         twist_msg = Twist()
-        twist_msg.linear.x = float(base_linear_vel)
-        twist_msg.angular.z = float(base_angular_vel)
+        twist_msg.linear.x = base_linear_vel
+        twist_msg.angular.z = base_angular_vel
         self.cmd_vel_pub.publish(twist_msg)
 
         if self.object_grasped:
@@ -431,6 +439,16 @@ class PickPlaceEnv(gym.Env):
 
         self.cmd_vel_pub.publish(Twist())
 
+    def _spawn_object(self, x, y, z):
+        """Move the Gazebo pickup_object to (x, y, z) via gz service."""
+        req = f'name: "pickup_object" position: {{x: {x:.4f}, y: {y:.4f}, z: {z:.4f}}} orientation: {{w: 1}}'
+        subprocess.run(
+            ['gz', 'service', '-s', '/world/pickplace_world/set_pose',
+             '--reqtype', 'gz.msgs.Pose', '--reptype', 'gz.msgs.Boolean',
+             '--timeout', '2000', '--req', req],
+            capture_output=True
+        )
+
     def reset(self, seed=None, **kwargs):
         super().reset(seed=seed)
 
@@ -440,9 +458,14 @@ class PickPlaceEnv(gym.Env):
         self.prev_distance = None
         self.grasp_verify_steps = 0
 
-        # Object is fixed in Gazebo at ~(0.6, 0, 0.065); real_object_pos will give exact position
-        self.object_start_pos = np.array([0.6, 0.0, 0.065])
+        # Randomize object XY ±3cm so the policy generalises, not memorises one spot
+        rng = np.random.default_rng(seed)
+        ox = 0.6 + rng.uniform(-0.03, 0.03)
+        oy = 0.0 + rng.uniform(-0.03, 0.03)
+        oz = 0.065
+        self.object_start_pos = np.array([ox, oy, oz])
         self.object_pos = self.object_start_pos.copy()
+        self._spawn_object(ox, oy, oz)
 
         self.cmd_vel_pub.publish(Twist())
 
