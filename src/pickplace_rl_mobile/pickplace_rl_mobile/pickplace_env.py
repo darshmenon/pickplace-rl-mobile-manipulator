@@ -286,15 +286,23 @@ class PickPlaceEnv(gym.Env):
                 reward += 100.0
 
         elif self.current_phase == 2:
-            # Phase 2: Grasping the object
+            # Phase 2: Approach object and grasp
             ref_obj = self.real_object_pos if self.real_object_pos is not None else self.object_pos
+
+            # Approach target: 2cm above object center so fingers wrap around
+            # cylinder sides rather than crashing into the object top
+            grasp_target = ref_obj.copy()
+            grasp_target[2] += 0.02
+
             dist_to_obj = np.linalg.norm(ee_global - ref_obj)
+            dist_to_target = np.linalg.norm(ee_global - grasp_target)
 
-            # Dense approach reward: pull EE toward object
+            # Dense reward: guide EE toward the grasp target (not the object center)
             if self.prev_distance is not None:
-                reward += (self.prev_distance - dist_to_obj) * 30.0
-            self.prev_distance = dist_to_obj
+                reward += (self.prev_distance - dist_to_target) * 30.0
+            self.prev_distance = dist_to_target
 
+            # Grasp fires when EE is within 8cm of object AND gripper closed
             if gripper_pos > 0.7 and dist_to_obj < 0.08:
                 self.object_grasped = True
                 self.current_phase = 3
@@ -302,7 +310,6 @@ class PickPlaceEnv(gym.Env):
                 self.prev_distance = None
                 reward += 500.0
             elif gripper_pos > 0.7 and dist_to_obj >= 0.08:
-                # Closed on air — tiny discouragement only
                 reward -= 0.1
 
             # Wrist orientation reward: nudge gripper to horizontal (wrist_2 ≈ 0)
