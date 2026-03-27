@@ -45,8 +45,11 @@
       </geometry>
     </collision>
     <inertial>
-      <mass value="10.0" />
-      <inertia ixx="0.2" ixy="0" ixz="0" iyy="0.2" iyz="0" izz="0.2" />
+      <!-- 30kg heavy base, CoM shifted 8cm to rear to counterbalance UR3 arm -->
+      <origin xyz="-0.08 0 0.02" rpy="0 0 0" />
+      <mass value="30.0" />
+      <!-- ixx large to resist pitching (arm tipping robot forward) -->
+      <inertia ixx="5.0" ixy="0" ixz="0" iyy="5.0" iyz="0" izz="3.0" />
     </inertial>
   </link>
   <link name="left_wheel">
@@ -114,28 +117,28 @@
     <axis xyz="0 1 0" />
   </joint>
 
-  <!-- Front Passive Caster (small sphere, zero friction) -->
+  <!-- Front Passive Caster (r=0.06 so bottom firmly contacts ground, joint at -0.02) -->
   <link name="front_caster">
     <visual>
       <geometry>
-        <sphere radius="0.04" />
+        <sphere radius="0.06" />
       </geometry>
       <material name="black" />
     </visual>
     <collision>
       <geometry>
-        <sphere radius="0.04" />
+        <sphere radius="0.06" />
       </geometry>
     </collision>
     <inertial>
-      <mass value="0.2" />
-      <inertia ixx="0.0001" ixy="0" ixz="0" iyy="0.0001" iyz="0" izz="0.0001" />
+      <mass value="0.5" />
+      <inertia ixx="0.0003" ixy="0" ixz="0" iyy="0.0003" iyz="0" izz="0.0003" />
     </inertial>
   </link>
   <joint name="front_caster_joint" type="fixed">
     <parent link="chassis_link" />
     <child link="front_caster" />
-    <origin xyz="0.30 0 -0.04" rpy="0 0 0" />
+    <origin xyz="0.22 0 -0.02" rpy="0 0 0" />
   </joint>
   <gazebo reference="front_caster">
     <mu1>0.0</mu1>
@@ -144,28 +147,28 @@
     <material>Gazebo/Black</material>
   </gazebo>
 
-  <!-- Rear Passive Caster (small sphere, zero friction) -->
+  <!-- Rear Passive Caster (r=0.06 so bottom firmly contacts ground, joint at -0.02) -->
   <link name="rear_caster">
     <visual>
       <geometry>
-        <sphere radius="0.04" />
+        <sphere radius="0.06" />
       </geometry>
       <material name="black" />
     </visual>
     <collision>
       <geometry>
-        <sphere radius="0.04" />
+        <sphere radius="0.06" />
       </geometry>
     </collision>
     <inertial>
-      <mass value="0.2" />
-      <inertia ixx="0.0001" ixy="0" ixz="0" iyy="0.0001" iyz="0" izz="0.0001" />
+      <mass value="0.5" />
+      <inertia ixx="0.0003" ixy="0" ixz="0" iyy="0.0003" iyz="0" izz="0.0003" />
     </inertial>
   </link>
   <joint name="rear_caster_joint" type="fixed">
     <parent link="chassis_link" />
     <child link="rear_caster" />
-    <origin xyz="-0.20 0 -0.04" rpy="0 0 0" />
+    <origin xyz="-0.20 0 -0.02" rpy="0 0 0" />
   </joint>
   <gazebo reference="rear_caster">
     <mu1>0.0</mu1>

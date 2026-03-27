@@ -2,7 +2,7 @@
 
 import argparse
 import os
-from stable_baselines3 import SAC
+from sb3_contrib import TQC
 from stable_baselines3.common.callbacks import CheckpointCallback, EvalCallback
 from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.vec_env import SubprocVecEnv, DummyVecEnv
@@ -55,8 +55,8 @@ def train(total_timesteps=500000, save_dir='./models', n_envs=1):
         render=False
     )
 
-    print("Initializing SAC model...")
-    model = SAC(
+    print("Initializing TQC model...")
+    model = TQC(
         'MlpPolicy',
         env,
         learning_rate=3e-4,
@@ -67,12 +67,13 @@ def train(total_timesteps=500000, save_dir='./models', n_envs=1):
         gamma=0.99,
         train_freq=1,
         gradient_steps=2,
+        top_quantiles_to_drop_per_net=2,
         verbose=1,
         device='cuda',
         tensorboard_log=os.path.join(save_dir, 'tensorboard')
     )
 
-    print(f"Starting training for {total_timesteps} timesteps across {n_envs} env(s)...")
+    print(f"Starting TQC training for {total_timesteps} timesteps across {n_envs} env(s)...")
     model.learn(
         total_timesteps=total_timesteps,
         callback=[checkpoint_callback, eval_callback],

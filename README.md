@@ -7,7 +7,7 @@
 
 An **autonomous mobile manipulator** combining a differential-drive base with a 6-DOF UR3-based arm for open-vocabulary pick-and-place. The system has two complementary control paths:
 
-- **Reinforcement Learning (SAC)** — a trained policy for direct low-level arm and base control, running at 20 Hz
+- **Reinforcement Learning (TQC)** — a trained policy for direct low-level arm and base control, running at 20 Hz
 - **VLA (Vision-Language-Action) pipeline** — language understanding + open-vocabulary vision + task planning, driving MoveIt2 for high-level task execution
 
 Both run on top of **Nav2 + SLAM** for autonomous navigation. The mobile base relies on a specialized 4-point differential drive configuration featuring zero-friction caster wheels to support the mass of the 6-DOF UR3 manipulator. Visual observations are captured securely through a static environment camera to avoid jitter.
@@ -29,7 +29,7 @@ Both run on top of **Nav2 + SLAM** for autonomous navigation. The mobile base re
 | **Open-vocabulary vision** | OWLv2 base-patch16 (~590 MB) + HSV colour fallback |
 | **Object memory** | Persistent timestamped map, 30s occlusion tolerance |
 | **Task planning** | Sort-all, clear-all, stack, single pick-and-place |
-| **RL control** | SAC (Stable-Baselines3), 16-dim obs, 8-dim continuous action |
+| **RL control** | TQC (sb3-contrib), 24-dim obs, 9-dim continuous action, scripted pre-grasp nav |
 | **Motion planning** | MoveIt2 MoveGroup action client + velocity fallback |
 | **Navigation** | Nav2 AMCL + DWB, custom obstacle-avoidance FSM |
 | **Exploration** | Frontier-based SLAM-aware autonomous exploration |
@@ -40,7 +40,7 @@ Both run on top of **Nav2 + SLAM** for autonomous navigation. The mobile base re
 
 ## Reinforcement Learning
 
-The RL system trains a **SAC (Soft Actor-Critic)** agent via [Stable-Baselines3](https://stable-baselines3.readthedocs.io/) in a custom Gymnasium environment (`PickPlaceEnv`) that wraps the live ROS 2 + Gazebo simulation. The agent learns a **6-phase curriculum** (approach → lower → grasp → lift → transport → place).
+The RL system trains a **TQC (Truncated Quantile Critics)** agent via [sb3-contrib](https://sb3-contrib.readthedocs.io/) in a custom Gymnasium environment (`PickPlaceEnv`) that wraps the live ROS 2 + Gazebo simulation. The agent learns a **5-phase curriculum** (lower → grasp → lift → transport → place) — the base approach is handled by a scripted P-controller so RL focuses only on manipulation.
 
 ### Observation Space (24-dim)
 
@@ -76,30 +76,37 @@ tensorboard --logdir ./rl_models/tensorboard
 
 Checkpoints are saved to `./rl_models/` every 10 000 steps. The best model (by eval reward) is saved as `best_model.zip`.
 
-### 6-Phase Curriculum Learning
+### Architecture: Scripted Nav + RL Manipulation
 
-The agent learns through **potential-based reward shaping** across 6 sequential phases. Each phase uses distance-difference rewards (`Δd × scale`) that create a dense gradient, preventing the agent from exploiting back-and-forth movement.
+Training is split into two stages per episode:
+
+1. **Scripted pre-grasp** (not RL) — a P-controller drives the base to ~25 cm from the bin (just outside the left wall), arm tucked upright. This runs at reset time and takes ~5–10 s.
+2. **RL manipulation** — TQC controls the arm and gripper across 5 phases from the pre-positioned base.
+
+This dramatically reduces the RL exploration space — no need to discover driving — and eliminates base-tipping crashes.
+
+### 5-Phase Curriculum Learning
 
 | Phase | Goal | Transition Condition | Bonus |
 |-------|------|---------------------|-------|
-| **0: Approach** | Drive base + extend arm toward object | EE within 10cm XY, base aligned | +100 |
-| **1: Lower** | Descend EE to grasp height (z≈0.07m) | Vertical distance < 2cm | +100 |
-| **2: Grasp** | Close gripper fingers | Finger position > 0.7 | +500 |
-| **3: Lift** | Raise grasped object to safe height (z≈0.25m) | Vertical distance < 5cm | +200 |
-| **4: Transport** | Drive to final placement location | EE within 15cm of target | +100 |
-| **5: Place** | Lower and release object | Distance < 8cm, gripper open | +1000 |
+| **1: Lower** | Descend EE to object height | Vertical distance < 2cm | +100 |
+| **2: Grasp** | Close gripper on object | Finger > 0.7 AND EE within 8cm of real object pos | +500 |
+| **3: Lift** | Raise object to safe height (z≈0.25m) | Vertical distance < 5cm | +200 |
+| **4: Transport** | Drive EE + base toward drop target | EE within 15cm of target XY | +100 |
+| **5: Place** | Lower and release | Distance < 8cm, gripper open | +1000 |
 
-**Anti-regression penalties:** In Phases 0 and 1, the agent receives a `-10.0` penalty for moving away from the target and `-1.0` for keeping joints stationary. This prevents the common RL failure mode of oscillating or freezing.
+**Grasp verification:** After claiming a grasp (phase 2→3), the real Gazebo object position (bridged via `/world/pickplace_world/dynamic_pose/info`) is monitored for 10 steps. If the object hasn't risen off the floor, the grasp is cancelled and phase resets to 2 with −50 penalty — no more false grasps.
 
-**Safety penalties:** Ground collision (EE z < 3cm) and base tipping (joint velocity spike > 10 rad/s) both terminate the episode with `-500`.
+**Safety penalties:** Ground collision (EE z < 3cm) and joint velocity spike > 10 rad/s both terminate with −500.
 
-### Why SAC?
+### Why TQC? (Upgraded from SAC)
 
-**Soft Actor-Critic** is ideal for robotic manipulation because:
-- **Continuous action space** — SAC handles the 9-dim continuous output (joint velocities + gripper + base) natively, unlike DQN which requires discretization
-- **Maximum entropy** — SAC maximizes both reward AND entropy, encouraging exploration. This is critical for multi-phase tasks where the agent must discover the grasp phase to unlock later rewards
-- **Off-policy** — SAC reuses past experience (replay buffer), making it 10-100× more sample-efficient than PPO for robotics
-- **Automatic temperature tuning** — The entropy coefficient (`ent_coef`) auto-tunes, so the agent explores aggressively early on and exploits learned behavior later
+The project initially trained with **SAC** for ~95,000 timesteps (best eval reward −328). After switching to a scripted pre-grasp approach, the algorithm was upgraded to **TQC** which extends SAC with distributional critics that model the full return distribution rather than just the mean. For robotic manipulation:
+- All SAC benefits (continuous actions, max entropy, off-policy, auto temperature)
+- **Reduced overestimation bias** — drops the top quantiles per critic network, leading to more stable Q-value estimates
+- **Better on manipulation benchmarks** — shown to outperform SAC on robotics tasks in the original paper (Kuznetsov et al., 2020)
+
+SAC was switched out because after 95k steps the reward plateaued at −328. The combination of scripted pre-grasp (eliminating base navigation from the RL problem) and TQC's distributional critics gives the agent a much cleaner learning signal from the pre-positioned start.
 
 ### Reward Shaping: Potential-Based Differences
 
@@ -113,13 +120,18 @@ This gives the agent a dense gradient (warm/cold signal) at every step. Moving c
 
 ### Expected Training Results
 
-| Timesteps | Mean Reward | Episode Length | Behavior |
-|-----------|------------|----------------|----------|
-| 0-10k | -600 to -1000 | 50-100 | Random exploration, frequent collisions |
-| 10k-50k | -400 to -600 | 200-400 | Base begins aligning toward object |
-| 50k-150k | -100 to -400 | 400-600 | Consistent approach + arm lowering |
-| 150k-300k | 0 to +200 | 600-800 | Grasping attempts, occasional lifts |
-| 300k-500k | +500 to +1500 | 800 | Full pick-place with transport |
+With scripted pre-grasp + TQC, the robot starts every episode already positioned at the bin. Typical progression on a CUDA GPU:
+
+| Timesteps | Wall Time | Mean Reward | Episode Length | Behavior |
+|-----------|-----------|------------|----------------|----------|
+| 0–10k | ~15 min | −700 to −500 | 400–800 | Random arm exploration from pre-grasp pose |
+| 10k–30k | ~45 min | −400 to −600 | 600–800 | Arm begins lowering toward object |
+| 30k–80k | ~2 hrs | −200 to −400 | 700–800 | Consistent arm approach, grasp attempts |
+| 80k–150k | ~4 hrs | −100 to +200 | 800 | Grasps emerging, occasional lifts |
+| 150k–300k | ~8 hrs | +200 to +800 | 800 | Reliable grasp + lift, transport learning |
+| 300k–500k | ~14 hrs | +800 to +1500 | 800 | Full pick-place cycles |
+
+> **Note:** Wall time assumes ~40 fps simulation. Each episode reset includes ~5–10 s of scripted navigation, so effective step rate is lower than pure-sim benchmarks.
 
 ### Where to Find the Trained Policy
 
@@ -154,7 +166,7 @@ ros2 launch pickplace_rl_mobile standalone_rl_training.launch.py
 *Note: The environment is mathematically tuned so the autonomous chassis must approach within **0.4m** of the **20cm x 20cm** object bin. This guarantees the pickup target is exactly **0.25m** from the arm base—perfectly avoiding chassis collisions while keeping the grasp safely within the UR3's 0.5m envelope.*
 
 ### Current Training Status (Active)
-The SAC policy has completed **~95,000 timesteps** across 32 training runs. Best eval reward so far: **−328** (phase 0→1 approach behaviour is emerging). The robot consistently drives toward the object and begins arm extension. Cylinder physics have been hardened (500g, r=3.5cm, damping added) to prevent tipping on contact.
+TQC run **TQC_3** is live. After switching from SAC (95k steps, best −328) to scripted pre-grasp + TQC, episode length is now a stable **800 steps** (no more base crashes). ~7k steps completed, reward trending from −527 toward improvement. Object is a 500g puck (r=4cm, h=8cm) — fits within the Robotiq 2F-85 gripper's 8.5cm max opening.
 
 ---
 
@@ -187,14 +199,14 @@ SAC Policy (20 Hz)
 
 ```bash
 # Install dependencies
-pip install stable-baselines3 gymnasium tensorboard
+pip install stable-baselines3 sb3-contrib gymnasium tensorboard
 
 # Build
 colcon build --packages-up-to pickplace_rl_mobile
 source install/setup.bash
 
-# Train with Gazebo visualization
-./src/pickplace_rl_mobile/launch/run_rl_training.sh
+# Train (Gazebo + scripted pre-grasp + TQC)
+ros2 launch pickplace_rl_mobile standalone_rl_training.launch.py
 
 # Monitor training
 tensorboard --logdir ./rl_models/tensorboard
