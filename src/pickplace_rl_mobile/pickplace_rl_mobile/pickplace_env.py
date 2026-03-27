@@ -183,6 +183,10 @@ class PickPlaceEnv(gym.Env):
         if ee_global[2] < 0.03 and self.current_phase not in [1, 2, 5]:
             return -500.0, True
 
+        # Out-of-bounds penalty: robot wandered too far from target (avoid local optimum)
+        if np.linalg.norm(self.object_pos[:2] - self.base_pose[:2]) > 1.5:
+            return -500.0, True
+
         if self.current_phase == 0:
             target_xy = self.object_pos[:2]
             ee_xy = ee_global[:2]
