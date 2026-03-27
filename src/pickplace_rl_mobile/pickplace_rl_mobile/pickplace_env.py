@@ -232,6 +232,7 @@ class PickPlaceEnv(gym.Env):
         if np.linalg.norm(obj_pos[:2] - self.base_pose[:2]) > 1.5:
             return -500.0, True
 
+
         if self.current_phase == 0:
             target_xy = obj_pos[:2]
             ee_xy = ee_global[:2]
@@ -444,7 +445,7 @@ class PickPlaceEnv(gym.Env):
 
         gripper_command = action[6]
 
-        # Zero base during manipulation phases (1-3) to preserve scripted approach pose
+        # Lock base during manipulation phases (1-3) — arm reaches from pregrasp position
         if self.current_phase in [1, 2, 3]:
             base_linear_vel = 0.0
             base_angular_vel = 0.0
@@ -488,9 +489,9 @@ class PickPlaceEnv(gym.Env):
         would reach the bin back-wall (outer face ≈ 0.40m), then extend the arm.
         Runs for up to 300 steps before handing off to RL.
         """
-        # Bin back-wall outer face ≈ 0.405m; caster front = chassis_x + 0.36m.
-        # Keep chassis_x ≤ 0.04m so the caster stays clear of the wall.
-        SAFE_CHASSIS_X = 0.04
+        # Bin back-wall outer face ≈ 0.405m; caster front = chassis_x + 0.24m (caster at 0.18m + radius 0.06m).
+        # Keep chassis_x ≤ 0.16m so the caster stays clear of the wall.
+        SAFE_CHASSIS_X = 0.16
 
         obj_pos = self.real_object_pos if self.real_object_pos is not None else self.object_pos
         for _ in range(300):
