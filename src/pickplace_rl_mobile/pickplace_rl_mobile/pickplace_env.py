@@ -190,25 +190,45 @@ class PickPlaceEnv(gym.Env):
             dist_xy = base_dist_xy + arm_dist_xy + abs(angle_diff) * 0.5
 
             if self.prev_distance is not None:
-                reward += (self.prev_distance - dist_xy) * 50.0
+                step_reward = (self.prev_distance - dist_xy) * 50.0
+                reward += step_reward
+                
+                # Heavily penalize moving AWAY from the target!
+                if dist_xy > self.prev_distance:
+                    reward -= 5.0
+                    
             self.prev_distance = dist_xy
 
+            # Penalize the standing still arm - force it to move toward the goal!
+            arm_speed = np.linalg.norm(self.joint_velocities[:6])
+            if arm_speed < 0.05:
+                reward -= 1.0
+
+            # Phase 0 -> Phase 1 Transition: Base arrived, Arm hovering over target
             if arm_dist_xy < 0.10 and base_dist_xy < 0.8 and abs(angle_diff) < 0.5 and ee_global[2] > 0.15:
                 self.current_phase = 1
                 self.prev_distance = None
-                reward += 50.0
+                reward += 100.0
 
         elif self.current_phase == 1:
+            # Phase 1: Try to PICK! Moving straight down to the cube.
             dist_z = abs(ee_global[2] - 0.07)
             if self.prev_distance is not None:
-                reward += (self.prev_distance - dist_z) * 50.0
+                step_reward = (self.prev_distance - dist_z) * 50.0
+                reward += step_reward
+                
+                # Punish moving away (back upwards)!
+                if dist_z > self.prev_distance:
+                    reward -= 5.0
             self.prev_distance = dist_z
+
             if dist_z < 0.02:
                 self.current_phase = 2
                 self.prev_distance = None
-                reward += 50.0
+                reward += 100.0
 
         elif self.current_phase == 2:
+            # Phase 2: Grasping the object
             if gripper_pos > 0.7:
                 self.object_grasped = True
                 self.current_phase = 3
@@ -245,7 +265,7 @@ class PickPlaceEnv(gym.Env):
             self.prev_distance = dist
             if dist < 0.08 and gripper_pos < 0.1:
                 self.object_grasped = False
-                reward += 500.0
+                reward += 1000.0
                 terminated = True
 
         reward -= 0.01 * np.sum(np.abs(self.joint_velocities[:6]))

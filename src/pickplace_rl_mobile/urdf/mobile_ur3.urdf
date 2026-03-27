@@ -113,6 +113,66 @@
     <origin xyz="0.1 -0.205 0" rpy="0 0 0" />
     <axis xyz="0 1 0" />
   </joint>
+
+  <!-- Front Passive Caster -->
+  <link name="front_caster">
+    <visual>
+      <geometry>
+        <sphere radius="0.08" />
+      </geometry>
+      <material name="black" />
+    </visual>
+    <collision>
+      <geometry>
+        <sphere radius="0.08" />
+      </geometry>
+    </collision>
+    <inertial>
+      <mass value="0.5" />
+      <inertia ixx="0.001" ixy="0" ixz="0" iyy="0.001" iyz="0" izz="0.001" />
+    </inertial>
+  </link>
+  <joint name="front_caster_joint" type="fixed">
+    <parent link="chassis_link" />
+    <child link="front_caster" />
+    <origin xyz="0.35 0 0" rpy="0 0 0" />
+  </joint>
+  <gazebo reference="front_caster">
+    <mu1>0.0</mu1>
+    <mu2>0.0</mu2>
+    <fdir1>1 0 0</fdir1>
+    <material>Gazebo/Black</material>
+  </gazebo>
+
+  <!-- Rear Passive Caster -->
+  <link name="rear_caster">
+    <visual>
+      <geometry>
+        <sphere radius="0.08" />
+      </geometry>
+      <material name="black" />
+    </visual>
+    <collision>
+      <geometry>
+        <sphere radius="0.08" />
+      </geometry>
+    </collision>
+    <inertial>
+      <mass value="0.5" />
+      <inertia ixx="0.001" ixy="0" ixz="0" iyy="0.001" iyz="0" izz="0.001" />
+    </inertial>
+  </link>
+  <joint name="rear_caster_joint" type="fixed">
+    <parent link="chassis_link" />
+    <child link="rear_caster" />
+    <origin xyz="-0.15 0 0" rpy="0 0 0" />
+  </joint>
+  <gazebo reference="rear_caster">
+    <mu1>0.0</mu1>
+    <mu2>0.0</mu2>
+    <fdir1>1 0 0</fdir1>
+    <material>Gazebo/Black</material>
+  </gazebo>
   <gazebo>
     <plugin filename="gz-sim-diff-drive-system" name="gz::sim::systems::DiffDrive">
       <left_joint>left_wheel_joint</left_joint>
@@ -731,143 +791,6 @@
     <child link="robotiq_arg2f_base_link" />
     <origin rpy="0 0 0" xyz="0 0 0.005" />
   </joint>
-  <link name="torso_link">
-    <inertial>
-      <origin xyz="0 0 0.50" />
-      <mass value="2.5" />
-      <inertia ixx="0.8" ixy="0.0" ixz="0.0" iyy="0.8" iyz="0.0" izz="0.8" />
-    </inertial>
-    <visual name="holder">
-      <origin rpy="0 0 0" xyz="0 0 0.25" />
-      <material name="LightGrey">
-        <color rgba="0.7 0.7 0.7 1.0" />
-      </material>
-      <geometry>
-        <cylinder length="0.5" radius="0.005" />
-      </geometry>
-    </visual>
-    <visual name="base">
-      <origin rpy="0 0 0" xyz="0 0 0" />
-      <material name="LightGrey">
-        <color rgba="0.7 0.7 0.7 1.0" />
-      </material>
-      <geometry>
-        <box size="0.15 0.10 0.06" />
-      </geometry>
-    </visual>
-    <collision name="holder">
-      <origin rpy="0 0 0" xyz="0 0 0.25" />
-      <geometry>
-        <cylinder length="0.6" radius="0.005" />
-      </geometry>
-    </collision>
-    <collision name="base">
-      <origin rpy="0 0 0" xyz="0 0 0.0" />
-      <geometry>
-        <box size="0.15 0.10 0.06" />
-      </geometry>
-    </collision>
-  </link>
-  <joint name="base_link_to_torso_link" type="fixed">
-    <parent link="base_link" />
-    <child link="torso_link" />
-    <origin rpy="0 0 0" xyz="0.22 -0.30 0" />
-  </joint>
-  <joint name="camera_head_joint" type="fixed">
-    <parent link="torso_link" />
-    <child link="camera_head_link" />
-    <origin rpy="0.0 0.4363323129985824 1.5707963267948966" xyz="0 0.01 0.50" />
-  </joint>
-  <link name="camera_head_link">
-    <visual>
-      <origin rpy="1.5707963267948966 0.0 1.5707963267948966" xyz="0 0 0" />
-      <geometry>
-        <mesh filename="package://ur_description/meshes/d435/visual/d435.stl" />
-      </geometry>
-      <material name="aluminum">
-        <color rgba="0.5 0.5 0.5 1" />
-      </material>
-    </visual>
-    <collision>
-      <origin rpy="0 0 0" xyz="0 0 0" />
-      <geometry>
-        <box size="0.02505 0.09 0.025" />
-      </geometry>
-    </collision>
-    <inertial>
-      <mass value="0.072" />
-      <origin xyz="0 0 0" />
-      <inertia ixx="0.003881243" ixy="0.0" ixz="0.0" iyy="0.000498940" iyz="0.0" izz="0.003879257" />
-    </inertial>
-  </link>
-  <joint name="camera_head_depth_joint" type="fixed">
-    <origin rpy="0 0 0" xyz="0 0 0" />
-    <parent link="camera_head_link" />
-    <child link="camera_head_depth_frame" />
-  </joint>
-  <link name="camera_head_depth_frame" />
-  <joint name="camera_head_depth_optical_joint" type="fixed">
-    <origin rpy="-1.5707963267948966 0 -1.5707963267948966" xyz="0 0 0" />
-    <parent link="camera_head_depth_frame" />
-    <child link="camera_head_depth_optical_frame" />
-  </joint>
-  <link name="camera_head_depth_optical_frame" />
-  <joint name="camera_head_infra1_joint" type="fixed">
-    <origin rpy="0 0 0" xyz="0 0.0 0" />
-    <parent link="camera_head_link" />
-    <child link="camera_head_infra1_frame" />
-  </joint>
-  <link name="camera_head_infra1_frame" />
-  <joint name="camera_head_infra1_optical_joint" type="fixed">
-    <origin rpy="-1.5707963267948966 0 -1.5707963267948966" xyz="0 0 0" />
-    <parent link="camera_head_infra1_frame" />
-    <child link="camera_head_infra1_optical_frame" />
-  </joint>
-  <link name="camera_head_infra1_optical_frame" />
-  <joint name="camera_head_infra2_joint" type="fixed">
-    <origin rpy="0 0 0" xyz="0 -0.05 0" />
-    <parent link="camera_head_link" />
-    <child link="camera_head_infra2_frame" />
-  </joint>
-  <link name="camera_head_infra2_frame" />
-  <joint name="camera_head_infra2_optical_joint" type="fixed">
-    <origin rpy="-1.5707963267948966 0 -1.5707963267948966" xyz="0 0 0" />
-    <parent link="camera_head_infra2_frame" />
-    <child link="camera_head_infra2_optical_frame" />
-  </joint>
-  <link name="camera_head_infra2_optical_frame" />
-  <joint name="camera_head_color_joint" type="fixed">
-    <origin rpy="0 0 0" xyz="0 0.015 0" />
-    <parent link="camera_head_link" />
-    <child link="camera_head_color_frame" />
-  </joint>
-  <link name="camera_head_color_frame" />
-  <joint name="camera_head_color_optical_joint" type="fixed">
-    <origin rpy="-1.5707963267948966 0 -1.5707963267948966" xyz="0 0 0" />
-    <parent link="camera_head_color_frame" />
-    <child link="camera_head_color_optical_frame" />
-  </joint>
-  <link name="camera_head_color_optical_frame" />
-  <gazebo reference="camera_head_link">
-    <sensor name="camera_head" type="rgbd_camera">
-      <camera>
-        <horizontal_fov>1.5184</horizontal_fov>
-        <image>
-          <width>424</width>
-          <height>240</height>
-        </image>
-        <clip>
-          <near>0.05</near>
-          <far>1.5</far>
-        </clip>
-      </camera>
-      <always_on>1</always_on>
-      <gz_frame_id>camera_head_depth_optical_frame</gz_frame_id>
-      <topic>camera_head</topic>
-      <update_rate>5</update_rate>
-      <visualize>true</visualize>
-    </sensor>
-  </gazebo>
 
   <!-- Initial joint positions for home pose (arm standing up) -->
   <gazebo reference="shoulder_lift_joint">

@@ -10,7 +10,7 @@ An **autonomous mobile manipulator** combining a differential-drive base with a 
 - **Reinforcement Learning (SAC)** — a trained policy for direct low-level arm and base control, running at 20 Hz
 - **VLA (Vision-Language-Action) pipeline** — language understanding + open-vocabulary vision + task planning, driving MoveIt2 for high-level task execution
 
-Both run on top of **Nav2 + SLAM** for autonomous navigation.
+Both run on top of **Nav2 + SLAM** for autonomous navigation. The mobile base relies on a specialized 4-point differential drive configuration featuring zero-friction caster wheels to support the mass of the 6-DOF UR3 manipulator. Visual observations are captured securely through a static environment camera to avoid jitter.
 
 ![Robot Model](./images/gazebo_robot.png)
 ![New Mobile UR3 Robot](./images/new_mobile_ur3.png)
