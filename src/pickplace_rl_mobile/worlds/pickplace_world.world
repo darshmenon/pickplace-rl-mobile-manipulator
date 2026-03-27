@@ -165,13 +165,21 @@
       <pose>0.6 0 0.12 0 0 0</pose>
       <link name="link">
         <inertial>
-          <mass>0.05</mass>
+          <!-- 300g solid cylinder: r=0.025m, h=0.18m
+               Ixx=Iyy = m*(3r²+h²)/12 = 0.3*(0.001875+0.0324)/12 ≈ 0.000855
+               Izz     = m*r²/2        = 0.3*0.000625/2            ≈ 0.0000938 -->
+          <mass>0.3</mass>
           <inertia>
-            <ixx>0.00002</ixx>
-            <iyy>0.00002</iyy>
-            <izz>0.00001</izz>
+            <ixx>0.000855</ixx>
+            <iyy>0.000855</iyy>
+            <izz>0.0000938</izz>
           </inertia>
         </inertial>
+        <!-- Damping prevents the cylinder from spinning freely on collision -->
+        <velocity_decay>
+          <linear>0.5</linear>
+          <angular>1.0</angular>
+        </velocity_decay>
         <visual name="visual">
           <geometry>
             <cylinder>
@@ -194,10 +202,18 @@
           <surface>
             <friction>
               <ode>
-                <mu>1.0</mu>
-                <mu2>1.0</mu2>
+                <mu>1.5</mu>
+                <mu2>1.5</mu2>
               </ode>
             </friction>
+            <contact>
+              <ode>
+                <kp>100000</kp>
+                <kd>500</kd>
+                <max_vel>0.01</max_vel>
+                <min_depth>0.001</min_depth>
+              </ode>
+            </contact>
           </surface>
         </collision>
       </link>
