@@ -17,9 +17,12 @@ Usage:
 
 import os
 import re
+import shutil
 import yaml
 from os import environ, pathsep
 
+from catkin_pkg.package import InvalidPackage, PACKAGE_MANIFEST_FILENAME, parse_package
+from ros2pkg.api import get_package_names
 from launch import LaunchDescription
 from launch.actions import (
     DeclareLaunchArgument,
@@ -42,6 +45,29 @@ def resolve_package_uris(urdf_str):
         except Exception:
             return match.group(0)
     return re.sub(r'package://([^/]+)/([^"\'>\s]+)', replace, urdf_str)
+
+
+def _gz_paths():
+    """Replicate GazeboRosPaths.get_paths() from gz_sim.launch.py."""
+    model_paths, plugin_paths = [], []
+    for pkg in get_package_names():
+        share = get_package_share_directory(pkg)
+        manifest = os.path.join(share, PACKAGE_MANIFEST_FILENAME)
+        if not os.path.isfile(manifest):
+            continue
+        try:
+            package = parse_package(manifest)
+        except InvalidPackage:
+            continue
+        for export in package.exports:
+            if export.tagname == 'gazebo_ros':
+                if 'gazebo_model_path' in export.attributes:
+                    p = export.attributes['gazebo_model_path'].replace('${prefix}', share)
+                    model_paths.append(p)
+                if 'plugin_path' in export.attributes:
+                    p = export.attributes['plugin_path'].replace('${prefix}', share)
+                    plugin_paths.append(p)
+    return pathsep.join(model_paths), pathsep.join(plugin_paths)
 
 
 def _write_bridge_config(ns, config_path):
@@ -101,22 +127,34 @@ def launch_setup(context, *args, **kwargs):
 
     ur_description_share = get_package_share_directory('ur_description')
     robotiq_share = get_package_share_directory('robotiq_2f_85_gripper_visualization')
-    gz_resource_path = pathsep.join([
+
+    model_paths, ros_plugin_paths = _gz_paths()
+
+    gz_resource_path = pathsep.join(filter(None, [
         os.path.join(ur_description_share, '..'),
         os.path.join(robotiq_share, '..'),
         environ.get('GZ_SIM_RESOURCE_PATH', ''),
         environ.get('IGN_GAZEBO_RESOURCE_PATH', ''),
-    ])
-    # GZ_SIM_SYSTEM_PLUGIN_PATH must include LD_LIBRARY_PATH so Gazebo can find
-    # plugins like DiffDrive, JointStatePublisher, JointController, etc.
-    gz_plugin_path = pathsep.join([
+        model_paths,
+    ]))
+
+    # Match exactly what gz_sim.launch.py sets so system plugins load correctly
+    gz_plugin_path = pathsep.join(filter(None, [
         environ.get('GZ_SIM_SYSTEM_PLUGIN_PATH', ''),
         environ.get('LD_LIBRARY_PATH', ''),
+        ros_plugin_paths,
+    ]))
+    ign_plugin_path = pathsep.join(filter(None, [
         environ.get('IGN_GAZEBO_SYSTEM_PLUGIN_PATH', ''),
-    ])
+        environ.get('LD_LIBRARY_PATH', ''),
+        ros_plugin_paths,
+    ]))
 
     with open(urdf_path, 'r') as f:
         robot_description = resolve_package_uris(f.read())
+
+    # gz executable path (same as gz_sim.launch.py uses ruby gz sim)
+    gz_exec = shutil.which('gz') or 'gz'
 
     actions = []
 
@@ -126,14 +164,17 @@ def launch_setup(context, *args, **kwargs):
         gz_env = {
             'GZ_PARTITION': partition,
             'GZ_SIM_RESOURCE_PATH': gz_resource_path,
+            'IGN_GAZEBO_RESOURCE_PATH': gz_resource_path,
             'GZ_SIM_SYSTEM_PLUGIN_PATH': gz_plugin_path,
+            'IGN_GAZEBO_SYSTEM_PLUGIN_PATH': ign_plugin_path,
         }
 
-        # --- Gazebo server ---
+        # --- Gazebo server (match gz_sim.launch.py: ruby gz sim ... shell=True) ---
         gz_sim = ExecuteProcess(
-            cmd=['gz', 'sim', '-r', '-v', '4', world_path],
+            cmd=[f'ruby {gz_exec} sim -r -v 4 {world_path} --force-version 7'],
             additional_env=gz_env,
             output='screen',
+            shell=True,
             name=f'gz_sim_{ns}',
         )
 
@@ -146,9 +187,7 @@ def launch_setup(context, *args, **kwargs):
             output='screen',
         )
 
-        # --- Spawn robot (staggered by instance index) ---
-        # Use bash -c to explicitly set GZ_PARTITION inline — additional_env inside
-        # TimerAction is not reliably inherited by the child process.
+        # --- Spawn robot (staggered; bash -c ensures GZ_PARTITION is set) ---
         spawn_cmd = (
             f'GZ_PARTITION={partition} '
             f'ros2 run ros_gz_sim create '
@@ -167,7 +206,7 @@ def launch_setup(context, *args, **kwargs):
             ],
         )
 
-        # --- Bridge (namespaced ROS <-> bare Gz topics) ---
+        # --- Bridge (namespaced ROS <-> bare Gz topics within this partition) ---
         bridge_config = f'/tmp/pickplace_bridge_{ns}.yaml'
         _write_bridge_config(ns, bridge_config)
 

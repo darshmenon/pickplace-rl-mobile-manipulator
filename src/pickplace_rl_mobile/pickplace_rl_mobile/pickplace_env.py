@@ -248,10 +248,16 @@ class PickPlaceEnv(gym.Env):
 
         elif self.current_phase == 2:
             # Phase 2: Grasping the object
-            if gripper_pos > 0.7:
+            # Require gripper to be closed AND EE near the object — prevents
+            # the agent from "grasping air" and falsely triggering phase 3.
+            dist_to_obj = np.linalg.norm(ee_global - self.object_pos)
+            if gripper_pos > 0.7 and dist_to_obj < 0.10:
                 self.object_grasped = True
                 self.current_phase = 3
                 reward += 500.0
+            elif gripper_pos > 0.7 and dist_to_obj >= 0.10:
+                # Closed on air — penalise and encourage re-opening
+                reward -= 2.0
             else:
                 reward -= 0.1
 
