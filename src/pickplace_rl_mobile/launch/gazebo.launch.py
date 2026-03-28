@@ -5,7 +5,9 @@ import re
 from launch import LaunchDescription
 from launch.actions import AppendEnvironmentVariable, IncludeLaunchDescription, TimerAction
 from launch.launch_description_sources import PythonLaunchDescriptionSource
+from launch.substitutions import LaunchConfiguration, PythonExpression
 from launch_ros.actions import Node
+from launch.actions import DeclareLaunchArgument
 from ament_index_python.packages import get_package_share_directory
 
 
@@ -23,6 +25,11 @@ def resolve_package_uris(urdf_str):
 
 
 def generate_launch_description():
+
+    headless_arg = DeclareLaunchArgument(
+        'headless', default_value='false',
+        description='Run Gazebo headless (no GUI) for faster training fps'
+    )
 
     pkg_dir = get_package_share_directory('pickplace_rl_mobile')
     world_path = os.path.join(pkg_dir, 'worlds', 'pickplace_world.world')
@@ -50,7 +57,11 @@ def generate_launch_description():
         PythonLaunchDescriptionSource(
             os.path.join(pkg_ros_gz_sim, 'launch', 'gz_sim.launch.py')
         ),
-        launch_arguments=[('gz_args', f'-r -v 4 {world_path}')]
+        launch_arguments=[('gz_args', PythonExpression([
+            "'-s -r -v 1 " + world_path + "' if '",
+            LaunchConfiguration('headless'),
+            "' == 'true' else '-r -v 1 " + world_path + "'"
+        ]))]
     )
 
     robot_state_publisher = Node(
@@ -95,13 +106,7 @@ def generate_launch_description():
             '/wrist_2_joint/cmd_vel@std_msgs/msg/Float64]gz.msgs.Double',
             '/wrist_3_joint/cmd_vel@std_msgs/msg/Float64]gz.msgs.Double',
             '/finger_joint/cmd_vel@std_msgs/msg/Float64]gz.msgs.Double',
-            # RGBD camera
-            '/camera_head/image@sensor_msgs/msg/Image[gz.msgs.Image',
-            '/camera_head/depth_image@sensor_msgs/msg/Image[gz.msgs.Image',
-            '/camera_head/points@sensor_msgs/msg/PointCloud2[gz.msgs.PointCloudPacked',
-            '/camera_head/camera_info@sensor_msgs/msg/CameraInfo[gz.msgs.CameraInfo',
-            # Lidar
-            '/scan@sensor_msgs/msg/LaserScan[gz.msgs.LaserScan',
+            # Camera/lidar bridges disabled during RL training — not used by policy
             # TF
             '/tf@tf2_msgs/msg/TFMessage[gz.msgs.Pose_V',
             '/tf_static@tf2_msgs/msg/TFMessage[gz.msgs.Pose_V',
@@ -112,6 +117,7 @@ def generate_launch_description():
     )
 
     return LaunchDescription([
+        headless_arg,
         set_gz_resource_path,
         gz_sim,
         robot_state_publisher,

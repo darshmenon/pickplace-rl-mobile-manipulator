@@ -160,18 +160,18 @@
       </link>
     </model>
 
-    <!-- Pickable Object: 8x8x8 cm box — flat faces give reliable gripper contact -->
+    <!-- Pickable Object: 6x6x6 cm box — fits Robotiq 2F-85 (85mm max opening) with clearance -->
     <model name="pickup_object">
-      <pose>0.6 0 0.065 0 0 0</pose>
+      <pose>0.6 0 0.055 0 0 0</pose>
       <link name="link">
         <inertial>
-          <!-- 500g solid cube: side=0.08m
-               Ixx=Iyy=Izz = m*(a²+b²)/12 = 0.5*(0.0064+0.0064)/12 ≈ 0.000533 -->
+          <!-- 500g solid cube: side=0.06m
+               Ixx=Iyy=Izz = m*(a²+b²)/12 = 0.5*(0.0036+0.0036)/12 = 0.0003 -->
           <mass>0.5</mass>
           <inertia>
-            <ixx>0.000533</ixx>
-            <iyy>0.000533</iyy>
-            <izz>0.000533</izz>
+            <ixx>0.0003</ixx>
+            <iyy>0.0003</iyy>
+            <izz>0.0003</izz>
           </inertia>
         </inertial>
         <velocity_decay>
@@ -181,7 +181,7 @@
         <visual name="visual">
           <geometry>
             <box>
-              <size>0.08 0.08 0.08</size>
+              <size>0.06 0.06 0.06</size>
             </box>
           </geometry>
           <material>
@@ -192,7 +192,7 @@
         <collision name="collision">
           <geometry>
             <box>
-              <size>0.08 0.08 0.08</size>
+              <size>0.06 0.06 0.06</size>
             </box>
           </geometry>
           <surface>

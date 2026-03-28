@@ -16,24 +16,27 @@ No demonstrations are used. The agent discovers useful behaviour purely from the
 - **Q-function Q(s,a)** — estimated cumulative reward if you take action `a` in state `s` and follow `π` thereafter. The critic learns this; the actor is updated to maximise it.
 - **Advantage** — `A(s,a) = Q(s,a) - V(s)`: how much better action `a` is vs the average. Used in actor gradient updates.
 
-**Observation Space (24-dim)**
+**Observation Space (27-dim)**
 ```
 joint_positions[6]   # arm joint angles (rad)
 joint_velocities[6]  # arm joint speeds (rad/s)
-finger_joint[1]      # gripper open/close position
-ee_pos[3]            # end-effector XYZ in world frame
+finger_joint[1]      # gripper open/close position (0=open, ~0.8=closed)
+ee_pos[3]            # end-effector XYZ in world frame (via DH FK)
 obj_pos[3]           # pickup object XYZ (real Gazebo pose via gz bridge)
+ee_to_obj[3]         # vector from EE to object (obj_pos - ee_pos)
 grasped[1]           # binary: object currently grasped?
 phase[1]             # current curriculum phase (1–5)
 base_pose[3]         # base x, y, heading θ (rad)
 ```
 
+`ee_to_obj` is a critical addition — it gives the network the direct error vector it needs to zero out. Without it, the network would have to subtract `ee_pos` from `obj_pos` internally every time, which is harder to learn.
+
 All positional quantities are in the **world frame** (consistent reference), not mixed local/global frames which would confuse the network.
 
 **Action Space (9-dim, continuous [-1, 1])**
 ```
-joint_deltas[6]      # arm position delta per joint (×0.05 rad = ±2.9°/step)
-gripper[1]           # >0 = close, <0 = open
+joint_deltas[6]      # arm position delta per joint (×0.25 rad = ±14°/step max)
+gripper[1]           # >0 = close at 0.5 rad/s, <0 = open
 base_linear[1]       # forward speed (phases 0, 4, 5 only; locked during grasping)
 base_angular[1]      # turn speed   (phases 0, 4, 5 only)
 ```
@@ -48,7 +51,7 @@ We started with **SAC (Soft Actor-Critic)** and switched to **TQC (Truncated Qua
 SAC adds an entropy term to the objective (`α·H(π)`), encouraging exploration by rewarding the policy for being stochastic. It uses two Q-networks and takes the minimum to reduce overestimation. Very sample-efficient on locomotion and simple manipulation.
 
 **Why SAC struggled here**
-Pick-and-place is contact-rich. Small positional errors (finger position vs cylinder) change Q-values drastically. SAC's min-of-two critics still overestimates in these discontinuous, high-variance reward regions, causing the policy to commit to phantom high-reward actions that fail at execution time.
+Pick-and-place is contact-rich. Small positional errors (finger position vs cube) change Q-values drastically. SAC's min-of-two critics still overestimates in these discontinuous, high-variance reward regions, causing the policy to commit to phantom high-reward actions that fail at execution time.
 
 **TQC (Kuznetsov et al. 2020)**
 Instead of a point estimate of Q(s,a), TQC models the full *return distribution* as a mixture of quantile atoms. During Bellman target computation it **drops the top N quantiles** (pessimistic truncation), which biases estimates downward without throwing away useful signal:
@@ -67,9 +70,10 @@ Effect: the policy is punished for overconfident Q-estimates in risky contact si
 | `batch_size` | 512 | Larger = smoother gradient, fits in GPU memory |
 | `tau` | 0.005 | Polyak averaging for target networks; small = stable |
 | `gamma` | 0.99 | Discounts rewards 100 steps ahead by ~37% |
-| `gradient_steps` | 2 | Two critic/actor updates per env step → faster learning |
+| `gradient_steps` | 1 | One update per env step — stable ratio of data:updates |
 | `top_quantiles_to_drop` | 2 | Pessimistic bias; higher = more conservative |
 | `learning_starts` | 1000 | Fill replay with random actions first |
+| `ent_coef` | 0.3 (fixed) | Fixed entropy weight — see section 11 |
 
 ---
 
@@ -77,7 +81,7 @@ Effect: the policy is punished for overconfident Q-estimates in risky contact si
 
 Training end-to-end (random → place object) from scratch fails because:
 1. The reward is extremely sparse — grasp success happens maybe 1 in 10 000 random rollouts
-2. The exploration space is huge (9D continuous actions × 800 steps)
+2. The exploration space is huge (9D continuous actions × 600 steps)
 
 **Solution: curriculum over 5 phases**
 
@@ -85,13 +89,13 @@ Each phase has its own dense reward that only activates when the previous phase 
 
 ```
 Phase 1: Lower EE to grasp height AND approach object XY
-         → transition when dist_z < 5cm AND dist_xy < 12cm
+         → transition when dist_z < 4cm AND dist_xy < 6cm
 
-Phase 2: Bring EE to grasp target (2cm above object center)
-         → transition when gripper closed AND EE within 8cm of object
+Phase 2: Bring EE to object center (side-grasp of 6cm cube)
+         → transition when gripper closed (>0.7) AND EE within 4cm of object
 
 Phase 3: Verify grasp (object must rise), lift EE to 25cm height
-         → transition when EE at 25cm; abort → phase 2 if object doesn't rise
+         → transition when EE at 25cm; abort → phase 2 if object doesn't rise after 10 steps
 
 Phase 4: Navigate base + EE toward placement zone (x=0.6, y=0.5)
          → transition when EE within 15cm of target AND base aligned
@@ -110,7 +114,7 @@ Each phase is a strictly easier problem than the full task. The agent learns to 
 ## 4. Potential-Based Reward Shaping
 
 **The sparse-reward problem**
-Phase transitions give large bonuses (+100 to +500), but those only happen occasionally. Between transitions, the agent gets no signal about whether it is improving.
+Phase transitions give large bonuses (+100 to +1000), but those only happen occasionally. Between transitions, the agent gets no signal about whether it is improving.
 
 **Potential-based shaping (Ng et al. 1999)**
 For any distance metric `d(s)` toward the sub-goal, define:
@@ -127,23 +131,23 @@ reward += (prev_distance - current_distance) × scale
 
 This is guaranteed **policy-invariant**: adding shaping does not change which policy is optimal, it only makes the gradient denser. Every step now carries signal.
 
-**Asymmetric shaping (new)**
+**Asymmetric shaping**
 Moving away from the object is penalised more harshly than approaching is rewarded:
 ```python
 delta = prev_dist - current_dist
-reward += delta * 50   if delta > 0   # approaching: normal reward
-reward += delta * 150  if delta < 0   # retreating: 3× harsher penalty
+reward += delta * 100   if delta > 0   # approaching: normal reward
+reward += delta * 300   if delta < 0   # retreating: 3× harsher penalty
 ```
 This breaks the symmetry so the agent strongly prefers staying near the object even when uncertain.
 
 **Scales by phase**
-| Phase | Metric | Approach | Retreat |
-|-------|--------|----------|---------|
-| 1 | `dist_z + 0.5×dist_xy` | ×50 | ×150 |
-| 2 | 3D to grasp target | ×30 | ×120 |
-| 3 | Z to 25cm lift | ×50 | ×50 |
-| 4 | XY + base + heading err | ×50 | ×50 |
-| 5 | 3D to place pos | ×50 | ×50 |
+| Phase | Metric | Approach scale | Retreat scale |
+|-------|--------|---------------|---------------|
+| 1 | `dist_z + dist_xy` | ×100 | ×300 |
+| 2 | 3D distance to object center | ×100 | ×400 |
+| 3 | Z distance to 25cm lift height | ×100 | ×200 |
+| 4 | XY + base dist + heading error | ×50 | ×50 |
+| 5 | 3D to placement position | ×50 | ×50 |
 
 ---
 
@@ -157,15 +161,18 @@ A P-controller executes the approach every reset:
 ```python
 angle_err = atan2(obj_y - base_y, obj_x - base_x) - base_theta
 angular_vel = clip(angle_err × 2.0, -1, 1)
-linear_vel  = clip((dist - 0.25) × 1.5, 0, 0.4) if |angle_err| < 0.4 else 0
-# arm tucked: shoulder_lift → -1.2 rad, elbow → +1.2 rad
+linear_vel  = clip((SAFE_X - base_x) × 3.0, 0, 0.2) if |angle_err| < 0.4 else 0
+# arm extended: shoulder_lift → -1.7, elbow → 2.0, wrist_1 → -1.0
 ```
-Runs for up to 300 steps, exits when `dist < 27cm`. Then RL takes over.
+Runs for up to 300 steps, exits when EE is within 30cm XY of object. Then RL takes over.
 
 This is equivalent to the **options framework** in hierarchical RL: a high-level option (navigate) terminates and passes control to a low-level option (manipulate). The RL policy never needs to explore navigation — it always starts positioned correctly.
 
 **Base locked during manipulation**
 During phases 1–3, base linear/angular velocity actions are zeroed regardless of what the policy outputs. This prevents the agent from accidentally driving away from the object mid-grasp.
+
+**Caster-aware driving**
+The front caster (r=6cm) sits at x=+18cm from chassis center. The bin back-wall is at ~x=0.405m. The script stops the chassis at x=0.16m so the caster front (0.16+0.18+0.06=0.40m) just clears the wall.
 
 ---
 
@@ -175,13 +182,13 @@ During phases 1–3, base linear/angular velocity actions are zeroed regardless 
 
 **Position-delta control** reframes actions as incremental position targets:
 ```python
-target_pos  = current_joint_pos + action × 0.05   # ±0.05 rad max per step
+target_pos  = current_joint_pos + action × 0.25   # ±0.25 rad max per step
 vel_command = clip((target_pos - current_pos) × 10, -0.5, 0.5)
 ```
 
 Benefits:
 - Action 0 → arm stays still (stable default)
-- Action ±1 → arm moves at most 0.05 rad (≈ 2.9°) per step — physically interpretable
+- Action ±1 → arm moves at most 0.25 rad (≈ 14°) per step — physically interpretable
 - No velocity explosion possible (hard clamp at ±0.5 rad/s)
 - Natural impedance: the P-gain of 10 gives stiff position tracking
 
@@ -271,13 +278,15 @@ After the gripper closes, the policy sets `object_grasped = True` and transition
 **Verification via real Gazebo pose**
 ```python
 # In phase 3, after 10 steps:
-if real_object_pos[2] < 0.06:   # object z hasn't risen above 6cm
+if real_object_pos[2] < 0.08:   # object z hasn't risen above 8cm
     object_grasped = False
     current_phase = 2            # back to grasping
     reward -= 10
 ```
 
 This uses the `/world/pickplace_world/dynamic_pose/info` Gazebo bridge topic to get ground-truth object position — not an estimate. The penalty is mild (-10) to discourage fake grasps without catastrophically punishing exploration near the grasp zone.
+
+The 8cm threshold accounts for the 6cm cube (center at 5.5cm resting): any genuine lift will push the object well above 8cm within 10 steps.
 
 ---
 
@@ -291,7 +300,7 @@ Without randomisation the policy overfits to a single object position. At test t
 ox = 0.6 + rng.uniform(-0.03, 0.03)   # ±3cm XY
 oy = 0.0 + rng.uniform(-0.03, 0.03)
 ```
-Object is respawned via Gazebo's `/world/pickplace_world/set_pose` service each reset. The policy must observe `ee_pos - obj_pos` and correct for the offset — it cannot memorise a fixed trajectory.
+Object is respawned via Gazebo's `/world/pickplace_world/set_pose` service each reset. The policy must observe `ee_to_obj` and correct for the offset — it cannot memorise a fixed trajectory.
 
 **Future: increase randomisation range** to ±5cm XY and add slight height variation as training matures.
 
@@ -304,10 +313,91 @@ TQC (like SAC) is **off-policy**: it can learn from experience collected by olde
 Each training step:
 1. Collect 1 env step with current policy → store `(s, a, r, s', done)` in buffer
 2. Sample random mini-batch of 512 transitions from buffer
-3. Run 2 gradient updates (critic loss = Bellman TD error; actor loss = -Q)
+3. Run 1 gradient update (critic loss = Bellman TD error; actor loss = -Q)
 
 **Why off-policy is critical for manipulation**
 Manipulation is rare-event-dominated: most steps are near-grasp exploration that never quite succeeds. The replay buffer lets the agent reuse near-success transitions many times, amplifying the learning signal from each rare positive experience.
 
+**gradient_steps and stability**
+`gradient_steps` controls how many gradient updates happen per env step. Higher values (4, 2) seem to speed up learning but can cause the policy to overfit to the current replay buffer contents — it becomes too deterministic too early, starving the entropy tuner and causing instability. `gradient_steps=1` (one update per new transition) keeps the data:update ratio stable.
+
 **Buffer fill strategy**
 `learning_starts=1000`: the first 1000 steps use a random policy to populate the buffer before any gradient steps. This prevents early Q-network collapse from training on highly correlated sequential data.
+
+---
+
+## 11. Entropy and ent_coef — Why It's Fixed
+
+**What entropy means in TQC/SAC**
+The actor is trained to maximise `Q(s,a) + α·H(π(·|s))` where `H` is the policy entropy (how random the action distribution is) and `α` (ent_coef) controls how much exploration is forced.
+
+- High `α` → policy stays stochastic, explores more, learns slower
+- Low `α` → policy becomes greedy/deterministic, exploits faster but can get stuck
+
+**Auto-tuning (default behaviour)**
+By default, SAC/TQC auto-tune `α` to hit a target entropy of `-dim(action_space) = -9`. The tuner increases `α` when policy entropy is below target (too deterministic) and decreases it when above.
+
+**Why auto-tuning blew up here**
+With `gradient_steps > 1`, the policy was being updated faster than new data arrived. It collapsed to a near-deterministic policy quickly. The tuner saw entropy << -9 and aggressively increased `α` trying to force exploration. This created a feedback loop: high `α` → policy forced random → random policy learns slowly → entropy stays weird → `α` grows to 200,000+. At that point the entropy term completely dominates the Q-value and the policy outputs random noise.
+
+**Fix: fixed ent_coef=0.3**
+By setting `ent_coef=0.3` (no auto-tuning), `α` stays constant. The policy naturally balances exploration and exploitation via the Q-value gradient alone. 0.3 is a common value used in manipulation papers — enough exploration to escape local optima without preventing convergence.
+
+```python
+model = TQC(..., ent_coef=0.3)   # fixed, no auto-tuning
+```
+
+---
+
+## 12. Safety Terminations and Penalty Design
+
+**Why terminations (not just penalties) matter**
+A large penalty like -500 with `terminated=True` is different from -500 with `terminated=False`:
+- With termination: the episode ends immediately. The agent can't "recover" from the bad state and keep accumulating reward. The full -500 is felt without any offsetting future reward.
+- Without termination: the agent can sometimes ignore large penalties if future rewards compensate. A robot that crashes into the ground might still get approach rewards afterward, learning to crash.
+
+**Our termination conditions**
+| Condition | Penalty | Why terminate |
+|---|---|---|
+| Joint velocity > 10 rad/s | -500 | Robot tumbling — episode is unrecoverable |
+| EE underground (not phases 1,2,5) | -500 | Arm crashed — physics will be unstable |
+| Base > 1.5m from object | -500 | Robot drove away — unrecoverable |
+| Base chassis over object | -300 | Robot drove onto the cube — object is crushed/lost |
+
+**The base-over-object termination**
+The chassis (45×35cm) can physically drive over the 6cm cube, either crushing it or trapping it underneath. We detect this by transforming the object position into the base's local frame and checking if it falls within the chassis footprint:
+```python
+dx_local =  dx*cos(θ) + dy*sin(θ)   # forward/backward in base frame
+dy_local = -dx*sin(θ) + dy*cos(θ)   # left/right in base frame
+if abs(dx_local) < 0.225 and abs(dy_local) < 0.175:
+    return -300.0, True   # terminate
+```
+`0.225` = half the 45cm chassis length, `0.175` = half the 35cm width.
+
+**Gripper-hold penalties**
+If the gripper opens during lift (phase 3) or transport (phase 4), the object falls but the `object_grasped` flag takes 10 steps to detect the failure (grasp verify delay). To prevent the agent from exploiting this gap:
+```python
+# phases 3 and 4:
+if gripper_pos < 0.3:
+    reward -= 20.0   # per step
+```
+
+---
+
+## 13. VecNormalize
+
+The 27-dim observation contains quantities at very different scales:
+- Joint angles: -6.28 to +6.28 rad
+- Positions: 0 to ~1.5m
+- Velocities: 0 to ~3 rad/s
+- Binary flags: 0 or 1
+
+Without normalisation, a neural network with uniform weight initialisation will be dominated by the largest-scale inputs. `VecNormalize` (Stable Baselines3) maintains running mean and variance for each observation dimension and normalises online:
+
+```
+obs_normalised = (obs - running_mean) / sqrt(running_var + ε)
+```
+
+Rewards are also normalised similarly, which prevents reward scale from needing to match the Q-value initialisation.
+
+**Critical for resuming**: the running statistics must be saved and loaded with the model. If you load a trained model but start with fresh normalisation statistics, the network sees completely different input distributions and will behave erratically. That's why `vecnormalize.pkl` is always saved and loaded alongside `best_model.zip`.

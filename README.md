@@ -166,11 +166,17 @@ pip install stable-baselines3 sb3-contrib gymnasium tensorboard
 colcon build --packages-select pickplace_rl_mobile --symlink-install
 source install/setup.bash
 
-# Launch Gazebo + training
+# Launch with Gazebo GUI (watch the robot)
 bash src/pickplace_rl_mobile/launch/run_rl_training.sh
 
-# Resume from a checkpoint
+# Launch headless — no GUI window, ~3-4× faster fps
+bash src/pickplace_rl_mobile/launch/run_rl_training.sh --headless
+
+# Resume from checkpoint, GUI
 bash src/pickplace_rl_mobile/launch/run_rl_training.sh ./rl_models/best_model.zip
+
+# Resume from checkpoint, headless (recommended for long runs)
+bash src/pickplace_rl_mobile/launch/run_rl_training.sh ./rl_models/best_model.zip --headless
 ```
 
 ---
@@ -178,7 +184,7 @@ bash src/pickplace_rl_mobile/launch/run_rl_training.sh ./rl_models/best_model.zi
 ## Training
 
 ```bash
-# Watch live rewards
+# Watch live rewards (log written by ros2 launch)
 grep -a "ep_rew_mean\|fps" /tmp/training.log | tail -10
 
 # TensorBoard

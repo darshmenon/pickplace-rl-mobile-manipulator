@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 
 import argparse
+import math
 import os
+import torch
 from sb3_contrib import TQC
 from stable_baselines3.common.callbacks import CheckpointCallback, EvalCallback, BaseCallback
 from stable_baselines3.common.monitor import Monitor
@@ -10,8 +12,7 @@ from pickplace_rl_mobile.pickplace_env import PickPlaceEnv
 
 
 class SaveVecNormalizeCallback(BaseCallback):
-    """Save VecNormalize stats alongside every model checkpoint so training
-    can be resumed without losing observation/reward normalisation."""
+    """Save VecNormalize stats and replay buffer alongside every model checkpoint."""
 
     def __init__(self, save_path: str, save_freq: int):
         super().__init__()
@@ -20,9 +21,9 @@ class SaveVecNormalizeCallback(BaseCallback):
 
     def _on_step(self) -> bool:
         if self.num_timesteps % self.save_freq == 0:
-            path = os.path.join(self.save_path, 'vecnormalize.pkl')
             if isinstance(self.training_env, VecNormalize):
-                self.training_env.save(path)
+                self.training_env.save(os.path.join(self.save_path, 'vecnormalize.pkl'))
+            self.model.save_replay_buffer(os.path.join(self.save_path, 'replay_buffer'))
         return True
 
 
@@ -103,6 +104,32 @@ def train(total_timesteps=500000, save_dir='./models', n_envs=1, load_model=None
             env=env,
             tensorboard_log=os.path.join(save_dir, 'tensorboard'),
         )
+
+        # Boost exploration on resume — policy tends to exploit mediocre behaviour
+        # with a cold buffer; higher ent_coef forces more diverse experience.
+        model.ent_coef = 0.3
+        model.ent_coef_tensor = torch.tensor(0.3, device=model.device)
+        if model.log_ent_coef is not None:
+            with torch.no_grad():
+                model.log_ent_coef.data.fill_(math.log(0.3))
+        print("Set ent_coef=0.3 for exploration boost on resume")
+
+        # More gradient updates per step while buffer is cold — squeezes more
+        # out of each new experience before the buffer fills up.
+        model.gradient_steps = 8
+        print("Set gradient_steps=8 for faster learning on resume")
+
+        # Load replay buffer if available — avoids cold-start problem entirely.
+        replay_buf_path = os.path.join(save_dir, 'replay_buffer.pkl')
+        if os.path.exists(replay_buf_path):
+            model.load_replay_buffer(replay_buf_path)
+            print(f"Loaded replay buffer ({model.replay_buffer.size()} transitions)")
+        else:
+            # No saved buffer — pre-fill with policy rollouts before first update
+            # so TQC has a diverse starting distribution to learn from.
+            pre_fill = 20000
+            model.learning_starts = model.num_timesteps + pre_fill
+            print(f"No replay buffer found — pre-filling with {pre_fill} steps before updates")
     else:
         print("Initializing new TQC model...")
         model = TQC(
@@ -115,8 +142,9 @@ def train(total_timesteps=500000, save_dir='./models', n_envs=1, load_model=None
             tau=0.005,
             gamma=0.99,
             train_freq=1,
-            gradient_steps=4,           # was 2 — more updates per env step
+            gradient_steps=1,
             top_quantiles_to_drop_per_net=2,
+            ent_coef=0.3,           # fixed — auto-tuning blows up for this env
             policy_kwargs=policy_kwargs,
             verbose=1,
             device='cuda',
@@ -133,6 +161,7 @@ def train(total_timesteps=500000, save_dir='./models', n_envs=1, load_model=None
     final_model_path = os.path.join(save_dir, 'pickplace_final_model')
     model.save(final_model_path)
     env.save(vecnorm_path)
+    model.save_replay_buffer(os.path.join(save_dir, 'replay_buffer'))
     print(f"Training complete! Model → {final_model_path}, VecNormalize → {vecnorm_path}")
 
     env.close()

@@ -13,6 +13,7 @@
 set -e
 
 N_WORLDS=${1:-2}
+LOAD_MODEL=${2:-""}
 
 if [ ! -d "install" ]; then
     echo "ERROR: run from workspace root"
@@ -120,6 +121,6 @@ sleep 15
 
 echo "Starting TQC training with $N_WORLDS envs..."
 ros2 run pickplace_rl_mobile train_rl \
-    --ros-args -- --n-envs "$N_WORLDS" --save-dir ./rl_models &> /tmp/training.log &
+    --ros-args -- --n-envs "$N_WORLDS" --save-dir ./rl_models --load-model "$LOAD_MODEL" &> /tmp/training.log &
 
 wait

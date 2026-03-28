@@ -127,7 +127,7 @@ class PickPlaceEnv(gym.Env):
         self._joint_states_received = False
         self.base_pose = np.zeros(3)  # x, y, theta
         self.episode_steps = 0
-        self.max_episode_steps = 800
+        self.max_episode_steps = 600
 
         # Targets
         self.object_start_pos = np.array([0.6, 0.0, 0.055])  # world frame
@@ -230,6 +230,17 @@ class PickPlaceEnv(gym.Env):
         if np.linalg.norm(obj_pos[:2] - self.base_pose[:2]) > 1.5:
             return -500.0, True
 
+        # Base-over-object penalty: chassis (38×38cm) has driven on top of the cube.
+        # Transform object into base frame and check against half-extents (0.19m each axis).
+        if not self.object_grasped:
+            bx, by, btheta = self.base_pose
+            dx = obj_pos[0] - bx
+            dy = obj_pos[1] - by
+            dx_local =  dx * np.cos(btheta) + dy * np.sin(btheta)
+            dy_local = -dx * np.sin(btheta) + dy * np.cos(btheta)
+            if abs(dx_local) < 0.225 and abs(dy_local) < 0.175:
+                return -300.0, True  # base crushed the object — end episode
+
 
         if self.current_phase == 0:
             target_xy = obj_pos[:2]
@@ -279,7 +290,7 @@ class PickPlaceEnv(gym.Env):
 
         elif self.current_phase == 1:
             # Phase 1: Lower arm to grasp height AND approach object XY
-            grasp_z = obj_pos[2] if obj_pos[2] > 0.03 else 0.065
+            grasp_z = obj_pos[2] if obj_pos[2] > 0.02 else 0.055
             dist_z = abs(ee_global[2] - grasp_z)
             dist_xy = np.linalg.norm(ee_global[:2] - obj_pos[:2])
             # Combined: reach grasp height + move EE toward object horizontally
@@ -315,41 +326,37 @@ class PickPlaceEnv(gym.Env):
             # Phase 2: Approach object and grasp
             ref_obj = self.real_object_pos if self.real_object_pos is not None else self.object_pos
 
-            # Approach target: 2cm above object center so fingers wrap around
-            # cylinder sides rather than crashing into the object top
-            grasp_target = ref_obj.copy()
-            grasp_target[2] += 0.02
-
+            # For a 6cm cube, side-grasp target = object center (EE at same height).
+            # No upward offset — fingers wrap around the sides at cube midpoint.
             dist_to_obj = np.linalg.norm(ee_global - ref_obj)
-            dist_to_target = np.linalg.norm(ee_global - grasp_target)
 
-            # Dense reward: guide EE toward the grasp target (not the object center)
+            # Dense reward: guide EE toward object center
             if self.prev_distance is not None:
-                delta = self.prev_distance - dist_to_target
-                reward += delta * 80.0 if delta > 0 else delta * 320.0  # 4× harsher when retreating
-            self.prev_distance = dist_to_target
+                delta = self.prev_distance - dist_to_obj
+                reward += delta * 100.0 if delta > 0 else delta * 400.0  # 4× harsher when retreating
+            self.prev_distance = dist_to_obj
 
-            # Proximity bonus: reward staying near grasp target (prevents drifting away)
-            if dist_to_target < 0.10:
-                reward += 8.0 * (1.0 - dist_to_target / 0.10)
+            # Proximity bonus: reward staying near object
+            if dist_to_obj < 0.10:
+                reward += 8.0 * (1.0 - dist_to_obj / 0.10)
 
-            # Touch-range bonus: EE is basically at the object surface — reward heavily
+            # Touch-range bonus: EE is at the object surface (~3cm = half cube side)
             if dist_to_obj < 0.04:
                 reward += 15.0 * (1.0 - dist_to_obj / 0.04)
 
-            # Very close bonus: within 3cm is pre-grasp territory
-            if dist_to_obj < 0.02:
+            # Very close bonus: within 3cm of center
+            if dist_to_obj < 0.03:
                 reward += 10.0
 
             # Reward gripper closing when already near object (actively encourage grasping)
-            if gripper_pos > 0.4 and dist_to_obj < 0.07:
+            if gripper_pos > 0.4 and dist_to_obj < 0.06:
                 reward += 8.0 * gripper_pos  # more reward the more closed the gripper
 
             # Penalty for opening gripper when very close (don't retreat from grasp)
             if gripper_pos < 0.2 and dist_to_obj < 0.05:
                 reward -= 5.0
 
-            # Grasp fires when EE is within 5cm of object AND gripper closed
+            # Grasp fires when EE is within 4cm of object AND gripper closed
             if gripper_pos > 0.7 and dist_to_obj < 0.04:
                 self.object_grasped = True
                 self.current_phase = 3
@@ -361,15 +368,19 @@ class PickPlaceEnv(gym.Env):
                 reward -= 0.5 + dist_to_obj * 5.0
 
             # Wrist orientation reward: nudge gripper to horizontal (wrist_2 ≈ 0)
-            # so fingers are parallel to ground for side-grasp of cylinder
+            # so fingers are parallel to ground for side-grasp of cube
             wrist_orient_err = abs(self.joint_positions[4])  # wrist_2_joint
             reward -= wrist_orient_err * 0.3
 
         elif self.current_phase == 3:
+            # Penalise opening gripper while lifting — object will fall
+            if gripper_pos < 0.3:
+                reward -= 20.0
+
             # Verify grasp: real object should rise with EE; if it stays on the floor, abort.
             if self.real_object_pos is not None:
                 self.grasp_verify_steps += 1
-                if self.grasp_verify_steps > 10 and self.real_object_pos[2] < 0.06:
+                if self.grasp_verify_steps > 10 and self.real_object_pos[2] < 0.08:
                     # Object didn't lift — grasp failed, go back to phase 2
                     self.object_grasped = False
                     self.current_phase = 2
@@ -388,6 +399,10 @@ class PickPlaceEnv(gym.Env):
                 reward += 200.0
 
         elif self.current_phase == 4:
+            # Penalise opening gripper during transport — object will fall
+            if gripper_pos < 0.3:
+                reward -= 20.0
+
             target_xy = self.target_pos[:2]
             ee_xy = ee_global[:2]
             base_xy = self.base_pose[:2]
@@ -541,7 +556,7 @@ class PickPlaceEnv(gym.Env):
             self.shoulder_pitch_pub.publish(Float64(data=float(s_vel)))
             self.elbow_pub.publish(Float64(data=float(e_vel)))
             self.wrist_1_pub.publish(Float64(data=float(w1_vel)))
-            time.sleep(0.01)
+            time.sleep(0.005)
 
         self.cmd_vel_pub.publish(Twist())
 
@@ -571,7 +586,7 @@ class PickPlaceEnv(gym.Env):
         rng = np.random.default_rng(seed)
         ox = 0.6 + rng.uniform(-0.03, 0.03)
         oy = 0.0 + rng.uniform(-0.03, 0.03)
-        oz = 0.065
+        oz = 0.055
         self.object_start_pos = np.array([ox, oy, oz])
         self.object_pos = self.object_start_pos.copy()
         self._spawn_object(ox, oy, oz)
