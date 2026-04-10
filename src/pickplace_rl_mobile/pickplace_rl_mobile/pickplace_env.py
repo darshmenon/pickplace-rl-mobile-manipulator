@@ -134,8 +134,14 @@ class PickPlaceEnv(gym.Env):
         self.target_pos = np.array([0.6, 0.5, 0.1])
         self.object_pos = self.object_start_pos.copy()
         self.object_grasped = False
+        self.grasp_verified = False
         self.real_object_pos = None  # updated from Gazebo world pose
         self.grasp_verify_steps = 0
+        self.grasp_attempts = 0
+        self.verified_grasps = 0
+        self.max_phase_reached = 0
+        self.last_dist_to_obj = np.inf
+        self.episode_success = False
 
         self.current_phase = 0
         self.prev_distance = None
@@ -208,6 +214,7 @@ class PickPlaceEnv(gym.Env):
 
         gripper_pos = self.joint_positions[6]  # finger_joint: 0=open, ~0.8=closed
         ee_global = self.get_global_ee_pos()
+        self.max_phase_reached = max(self.max_phase_reached, self.current_phase)
 
         # Base tipping penalty: if robot falls over, base height deviates significantly
         # Normal base z is ~0.08 (spawn height). If it tilts, z changes dramatically.
@@ -293,6 +300,7 @@ class PickPlaceEnv(gym.Env):
             grasp_z = obj_pos[2] if obj_pos[2] > 0.02 else 0.055
             dist_z = abs(ee_global[2] - grasp_z)
             dist_xy = np.linalg.norm(ee_global[:2] - obj_pos[:2])
+            self.last_dist_to_obj = dist_xy
             # Combined: reach grasp height + move EE toward object horizontally
             dist_combined = dist_z + dist_xy * 1.0
             if self.prev_distance is not None:
@@ -329,6 +337,7 @@ class PickPlaceEnv(gym.Env):
             # For a 6cm cube, side-grasp target = object center (EE at same height).
             # No upward offset — fingers wrap around the sides at cube midpoint.
             dist_to_obj = np.linalg.norm(ee_global - ref_obj)
+            self.last_dist_to_obj = dist_to_obj
 
             # Dense reward: guide EE toward object center
             if self.prev_distance is not None:
@@ -356,13 +365,16 @@ class PickPlaceEnv(gym.Env):
             if gripper_pos < 0.2 and dist_to_obj < 0.05:
                 reward -= 5.0
 
-            # Grasp fires when EE is within 4cm of object AND gripper closed
+            # A close, closed gripper starts a lift attempt. The large grasp
+            # reward is withheld until the real Gazebo object actually rises.
             if gripper_pos > 0.7 and dist_to_obj < 0.04:
                 self.object_grasped = True
+                self.grasp_verified = False
                 self.current_phase = 3
                 self.grasp_verify_steps = 0
                 self.prev_distance = None
-                reward += 1000.0
+                self.grasp_attempts += 1
+                reward += 50.0
             elif gripper_pos > 0.7 and dist_to_obj >= 0.08:
                 # Penalty scales with distance: closing far away = much worse than closing nearby
                 reward -= 0.5 + dist_to_obj * 5.0
@@ -380,11 +392,18 @@ class PickPlaceEnv(gym.Env):
             # Verify grasp: real object should rise with EE; if it stays on the floor, abort.
             if self.real_object_pos is not None:
                 self.grasp_verify_steps += 1
-                if self.grasp_verify_steps > 10 and self.real_object_pos[2] < 0.08:
+                if self.real_object_pos[2] >= 0.08:
+                    if not self.grasp_verified:
+                        self.grasp_verified = True
+                        self.verified_grasps += 1
+                        reward += 1000.0
+                elif self.grasp_verify_steps > 15:
                     # Object didn't lift — grasp failed, go back to phase 2
                     self.object_grasped = False
+                    self.grasp_verified = False
                     self.current_phase = 2
-                    reward -= 10.0
+                    self.prev_distance = None
+                    reward -= 250.0
             dist_z = abs(ee_global[2] - 0.25)
             if self.prev_distance is not None:
                 delta = self.prev_distance - dist_z
@@ -393,7 +412,7 @@ class PickPlaceEnv(gym.Env):
             # Bonus for being near lift height
             if dist_z < 0.08:
                 reward += 5.0 * (1.0 - dist_z / 0.08)
-            if dist_z < 0.05:
+            if self.grasp_verified and dist_z < 0.05:
                 self.current_phase = 4
                 self.prev_distance = None
                 reward += 200.0
@@ -427,6 +446,8 @@ class PickPlaceEnv(gym.Env):
             self.prev_distance = dist
             if dist < 0.08 and gripper_pos < 0.1:
                 self.object_grasped = False
+                self.grasp_verified = False
+                self.episode_success = True
                 reward += 1000.0
                 terminated = True
 
@@ -481,7 +502,7 @@ class PickPlaceEnv(gym.Env):
         twist_msg.angular.z = base_angular_vel
         self.cmd_vel_pub.publish(twist_msg)
 
-        if self.object_grasped:
+        if self.grasp_verified:
             ee_global = self.get_global_ee_pos()
             self.object_pos = ee_global.copy()
             self.object_pos[2] -= 0.05
@@ -493,8 +514,21 @@ class PickPlaceEnv(gym.Env):
 
         self.episode_steps += 1
         truncated = self.episode_steps >= self.max_episode_steps
+        self.max_phase_reached = max(self.max_phase_reached, self.current_phase)
 
-        return obs, reward, terminated, truncated, {}
+        info = {
+            'phase': int(self.current_phase),
+            'max_phase': int(self.max_phase_reached),
+            'grasp_candidate': bool(self.object_grasped),
+            'grasp_verified': bool(self.grasp_verified),
+            'grasp_attempts': int(self.grasp_attempts),
+            'verified_grasps': int(self.verified_grasps),
+            'real_object_z': float(self.real_object_pos[2]) if self.real_object_pos is not None else float('nan'),
+            'dist_to_obj': float(self.last_dist_to_obj),
+            'is_success': bool(self.episode_success),
+        }
+
+        return obs, reward, terminated, truncated, info
 
     def _scripted_pregrasp(self):
         """
@@ -578,9 +612,15 @@ class PickPlaceEnv(gym.Env):
 
         self.episode_steps = 0
         self.object_grasped = False
+        self.grasp_verified = False
         self.current_phase = 1  # start directly at lowering phase (base already positioned)
         self.prev_distance = None
         self.grasp_verify_steps = 0
+        self.grasp_attempts = 0
+        self.verified_grasps = 0
+        self.max_phase_reached = self.current_phase
+        self.last_dist_to_obj = np.inf
+        self.episode_success = False
 
         # Randomize object XY ±3cm so the policy generalises, not memorises one spot
         rng = np.random.default_rng(seed)
@@ -589,6 +629,7 @@ class PickPlaceEnv(gym.Env):
         oz = 0.055
         self.object_start_pos = np.array([ox, oy, oz])
         self.object_pos = self.object_start_pos.copy()
+        self.real_object_pos = None
         self._spawn_object(ox, oy, oz)
 
         self.cmd_vel_pub.publish(Twist())
