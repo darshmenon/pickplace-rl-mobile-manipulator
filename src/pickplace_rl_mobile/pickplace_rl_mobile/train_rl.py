@@ -27,11 +27,37 @@ class SaveVecNormalizeCallback(BaseCallback):
         return True
 
 
-def make_env(ros_domain_id=None, gz_partition=None):
+class SaveBestVecNormalizeCallback(BaseCallback):
+    """Persist normalization stats whenever EvalCallback finds a new best model."""
+
+    def __init__(self, save_path: str):
+        super().__init__()
+        self.save_path = save_path
+
+    def _on_step(self) -> bool:
+        if isinstance(self.training_env, VecNormalize):
+            self.training_env.save(os.path.join(self.save_path, 'best_vecnormalize.pkl'))
+        return True
+
+
+def make_env(monitor_path=None, ros_domain_id=None, gz_partition=None):
     """Factory that returns a thunk creating a monitored PickPlaceEnv."""
     def _init():
         env = PickPlaceEnv(ros_domain_id=ros_domain_id, gz_partition=gz_partition)
-        return Monitor(env)
+        # Log additional info metrics in monitor.csv
+        kw = (
+            'phase',
+            'max_phase',
+            'grasp_attempts',
+            'verified_grasps',
+            'grasp_verified',
+            'real_object_z',
+            'object_height_delta',
+            'dist_to_obj',
+            'finger_joint',
+            'is_success',
+        )
+        return Monitor(env, filename=monitor_path, info_keywords=kw)
     return _init
 
 
@@ -43,16 +69,26 @@ def train(total_timesteps=500000, save_dir='./models', n_envs=1, load_model=None
     os.makedirs(save_dir, exist_ok=True)
 
     vecnorm_path = os.path.join(save_dir, 'vecnormalize.pkl')
+    monitor_dir = os.path.join(save_dir, 'monitor')
+    eval_monitor_dir = os.path.join(save_dir, 'eval_monitor')
+    best_model_dir = os.path.join(save_dir, 'best_model')
+    os.makedirs(monitor_dir, exist_ok=True)
+    os.makedirs(eval_monitor_dir, exist_ok=True)
+    os.makedirs(best_model_dir, exist_ok=True)
 
     print(f"Creating {n_envs} parallel pick-and-place environment(s)...")
     if n_envs > 1:
         raw_env = SubprocVecEnv([
-            make_env(ros_domain_id=_MULTI_WORLD_BASE_DOMAIN + i,
+            make_env(
+                     monitor_path=os.path.join(monitor_dir, f'train_env_{i}.monitor.csv'),
+                     ros_domain_id=_MULTI_WORLD_BASE_DOMAIN + i,
                      gz_partition=f'sim_{i}')
             for i in range(n_envs)
         ])
     else:
-        raw_env = DummyVecEnv([make_env()])
+        raw_env = DummyVecEnv([
+            make_env(monitor_path=os.path.join(monitor_dir, 'train_env_0.monitor.csv'))
+        ])
 
     # VecNormalize: normalises obs and rewards online — critical when obs spans
     # joint angles (rad), positions (m), and velocities (rad/s) at very different scales.
@@ -64,33 +100,32 @@ def train(total_timesteps=500000, save_dir='./models', n_envs=1, load_model=None
     else:
         env = VecNormalize(raw_env, norm_obs=True, norm_reward=True, clip_obs=10.0)
 
-    raw_eval = DummyVecEnv([
-        make_env(ros_domain_id=_MULTI_WORLD_BASE_DOMAIN if n_envs > 1 else None,
-                 gz_partition='sim_0' if n_envs > 1 else None)
+    eval_raw_env = DummyVecEnv([
+        make_env(monitor_path=os.path.join(eval_monitor_dir, 'eval_env_0.monitor.csv'))
     ])
-    if load_model and os.path.exists(vecnorm_path):
-        eval_env = VecNormalize.load(vecnorm_path, raw_eval)
-        eval_env.training = False
-        eval_env.norm_reward = False
+    if os.path.exists(vecnorm_path):
+        eval_env = VecNormalize.load(vecnorm_path, eval_raw_env)
     else:
-        eval_env = VecNormalize(raw_eval, norm_obs=True, norm_reward=False, clip_obs=10.0)
-        eval_env.training = False
+        eval_env = VecNormalize(eval_raw_env, norm_obs=True, norm_reward=False, clip_obs=10.0)
+    eval_env.training = False
+    eval_env.norm_reward = False
 
     ckpt_freq = max(10000 // n_envs, 1)
+    eval_freq = max(5000 // n_envs, 1)
     checkpoint_callback = CheckpointCallback(
         save_freq=ckpt_freq,
         save_path=save_dir,
         name_prefix='pickplace_model'
     )
     vecnorm_callback = SaveVecNormalizeCallback(save_path=save_dir, save_freq=ckpt_freq)
-
     eval_callback = EvalCallback(
         eval_env,
-        best_model_save_path=save_dir,
+        best_model_save_path=best_model_dir,
         log_path=save_dir,
-        eval_freq=max(20000 // n_envs, 1),
+        eval_freq=eval_freq,
+        n_eval_episodes=5,
         deterministic=True,
-        render=False
+        callback_on_new_best=SaveBestVecNormalizeCallback(best_model_dir),
     )
 
     # 3-layer 512-unit network: bigger than default [256,256] to capture
@@ -105,19 +140,16 @@ def train(total_timesteps=500000, save_dir='./models', n_envs=1, load_model=None
             tensorboard_log=os.path.join(save_dir, 'tensorboard'),
         )
 
-        # Boost exploration on resume — policy tends to exploit mediocre behaviour
-        # with a cold buffer; higher ent_coef forces more diverse experience.
-        model.ent_coef = 0.3
-        model.ent_coef_tensor = torch.tensor(0.3, device=model.device)
+        # Keep ent_coef at 0.1 on resume — 0.3 was too aggressive and hurt convergence.
+        model.ent_coef = 0.1
+        model.ent_coef_tensor = torch.tensor(0.1, device=model.device)
         if model.log_ent_coef is not None:
             with torch.no_grad():
-                model.log_ent_coef.data.fill_(math.log(0.3))
-        print("Set ent_coef=0.3 for exploration boost on resume")
+                model.log_ent_coef.data.fill_(math.log(0.1))
+        print("Set ent_coef=0.1 on resume")
 
-        # More gradient updates per step while buffer is cold — squeezes more
-        # out of each new experience before the buffer fills up.
-        model.gradient_steps = 8
-        print("Set gradient_steps=8 for faster learning on resume")
+        model.gradient_steps = 4
+        print("Set gradient_steps=4 on resume")
 
         # Load replay buffer if available — avoids cold-start problem entirely.
         replay_buf_path = os.path.join(save_dir, 'replay_buffer.pkl')
@@ -155,7 +187,8 @@ def train(total_timesteps=500000, save_dir='./models', n_envs=1, load_model=None
     model.learn(
         total_timesteps=total_timesteps,
         callback=[checkpoint_callback, vecnorm_callback, eval_callback],
-        progress_bar=True
+        progress_bar=True,
+        reset_num_timesteps=not bool(load_model),
     )
 
     final_model_path = os.path.join(save_dir, 'pickplace_final_model')

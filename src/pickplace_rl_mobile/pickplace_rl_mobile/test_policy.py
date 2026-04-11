@@ -9,7 +9,8 @@ import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import Image
 from cv_bridge import CvBridge
-from stable_baselines3 import SAC
+from sb3_contrib import TQC
+from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
 from pickplace_rl_mobile.pickplace_env import PickPlaceEnv
 import threading
 
@@ -63,23 +64,38 @@ def test_policy(model_path, num_episodes=5):
     
     # Load model
     print(f"Loading model from {model_path}...")
+    model_dir = os.path.dirname(model_path) or '.'
+    vecnorm_candidates = [
+        os.path.join(model_dir, 'vecnormalize.pkl'),
+        os.path.join(model_dir, 'best_vecnormalize.pkl'),
+    ]
+    vecnorm_path = next((p for p in vecnorm_candidates if os.path.exists(p)), None)
+
     try:
-        model = SAC.load(model_path)
+        env = DummyVecEnv([lambda: PickPlaceEnv()])
+        if vecnorm_path:
+            print(f"Loading VecNormalize stats from {vecnorm_path}...")
+            env = VecNormalize.load(vecnorm_path, env)
+        else:
+            print("VecNormalize stats not found; using raw observations for testing.")
+            env = VecNormalize(env, norm_obs=True, norm_reward=False, clip_obs=10.0)
+        env.training = False
+        env.norm_reward = False
+
+        model = TQC.load(model_path, env=env)
     except Exception as e:
         print(f"Error loading model: {e}")
         return
 
-    # Create environment
-    print("Creating environment...")
-    env = PickPlaceEnv()
-    
     # Run episodes
     episode_rewards = []
     success_count = 0
+    phase_counts = {}
+    verified_grasps = 0
     
     for episode in range(num_episodes):
         print(f"\n=== Episode {episode + 1}/{num_episodes} ===")
-        obs, _ = env.reset()
+        obs = env.reset()
         episode_reward = 0
         done = False
         step = 0
@@ -93,36 +109,55 @@ def test_policy(model_path, num_episodes=5):
             action, _ = model.predict(obs, deterministic=True)
             
             # Take step
-            obs, reward, terminated, truncated, info = env.step(action)
-            episode_reward += reward
-            done = terminated or truncated
+            obs, reward, done_flags, infos = env.step(action)
+            info = infos[0]
+            episode_reward += float(reward[0])
+            done = bool(done_flags[0])
             step += 1
             
             # Print progress
             if step % 50 == 0:
-                ee_pos = obs[5:8]
-                print(f"  Step {step}: Reward = {reward:.2f}")
+                print(
+                    f"  Step {step}: Reward = {float(reward[0]):.2f}, "
+                    f"phase = {info.get('phase')}, verified_grasp = {info.get('grasp_verified')}"
+                )
         
         # Episode summary
         episode_rewards.append(episode_reward)
+        max_phase = int(info.get('max_phase', info.get('phase', -1)))
+        phase_counts[max_phase] = phase_counts.get(max_phase, 0) + 1
+        verified_grasps += int(bool(info.get('grasp_verified', False)) or int(info.get('verified_grasps', 0)) > 0)
         
         # Check success
-        obj_pos = obs[8:11]
+        terminal_obs = info.get('terminal_observation')
+        if terminal_obs is None:
+            final_obs = env.get_original_obs()[0] if isinstance(env, VecNormalize) else obs[0]
+        elif isinstance(env, VecNormalize):
+            final_obs = env.unnormalize_obs(np.asarray([terminal_obs]))[0]
+        else:
+            final_obs = terminal_obs
+        obj_pos = final_obs[16:19]
         target_pos = np.array([0.6, 0.5, 0.1])
         distance_to_target = np.linalg.norm(obj_pos - target_pos)
         
-        if distance_to_target < 0.15:
+        if bool(info.get('is_success', False)) or distance_to_target < 0.15:
             success_count += 1
             print(f"✓ Episode {episode + 1} SUCCESS!")
             recorder.save_snapshot(f"episode_{episode+1}_success.png")
         else:
             print(f"✗ Episode {episode + 1} failed.")
             recorder.save_snapshot(f"episode_{episode+1}_fail.png")
+        print(
+            f"  Episode reward: {episode_reward:.2f}, max_phase: {max_phase}, "
+            f"verified_grasps: {info.get('verified_grasps', 0)}, final_dist_to_target: {distance_to_target:.3f}"
+        )
             
     # Final statistics
     print("\n" + "="*50)
     print(f"Success rate: {success_count}/{num_episodes} ({100*success_count/num_episodes:.1f}%)")
     print(f"Average reward: {np.mean(episode_rewards):.2f}")
+    print(f"Verified grasps: {verified_grasps}/{num_episodes}")
+    print(f"Max phase histogram: {phase_counts}")
     print("="*50)
     
     # Cleanup
