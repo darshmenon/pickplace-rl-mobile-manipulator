@@ -51,22 +51,34 @@ def ur3_fk(joint_angles: np.ndarray) -> np.ndarray:
     return T[:3, 3]
 
 
+_GRIPPER_MIMIC_MULTIPLIERS = {
+    'left_inner_knuckle_joint': 1.0,
+    'left_inner_finger_joint': -1.0,
+    'right_outer_knuckle_joint': -1.0,
+    'right_inner_knuckle_joint': 1.0,
+    'right_inner_finger_joint': -1.0,
+}
+
+
 class PickPlaceEnv(gym.Env):
     """
     Gymnasium environment for pick-and-place RL training.
 
-    Observation (27): [joint_pos(6), joint_vel(6), finger_pos(1), ee_pos(3), obj_pos(3),
-                       ee_to_obj(3), grasped(1), phase(1), base_pose(3)]
+    Observation (43): [joint_pos(6), joint_vel(6), finger_pos(1), ee_pos(3), obj_pos(3),
+                       ee_to_obj(3), ee_to_target(3), obj_to_target(3),
+                       obj_in_base(3), gripper_error(1), grasped(1), phase(1),
+                       base_pose(3), prev_action(9)]
     Action (9):       [joint_vels(6), gripper(1), base_linear(1), base_angular(1)]
 
     ee_to_obj = obj_pos - ee_pos is the direct tracking vector: if the object moves,
     this immediately reflects the new direction/distance the arm needs to travel.
     """
 
-    def __init__(self, namespace='', ros_domain_id=None, gz_partition=None):
+    def __init__(self, namespace='', ros_domain_id=None, gz_partition=None, curriculum_stage=0):
         super().__init__()
 
         self.gz_partition = gz_partition  # stored for subprocess calls (e.g. _spawn_object)
+        self.curriculum_stage = int(curriculum_stage)
 
         # Must be set before rclpy.init() so the node joins the right domain
         if ros_domain_id is not None:
@@ -90,11 +102,13 @@ class PickPlaceEnv(gym.Env):
         )
 
         # Observation space: 6 joint pos + 6 joint vel + 1 finger pos + 3 ee + 3 obj
-        #                  + 3 ee_to_obj + 1 grasped + 1 phase + 3 base pose  = 27
+        #                  + 3 ee_to_obj + 3 ee_to_target + 3 obj_to_target
+        #                  + 3 obj_in_base + 1 gripper_error + 1 grasped + 1 phase
+        #                  + 3 base pose + 9 prev_action = 43
         self.observation_space = spaces.Box(
             low=-np.inf,
             high=np.inf,
-            shape=(27,),
+            shape=(43,),
             dtype=np.float32
         )
 
@@ -109,6 +123,15 @@ class PickPlaceEnv(gym.Env):
         self.wrist_2_pub        = self.node.create_publisher(Float64, 'wrist_2_joint/cmd_vel', 10)
         self.wrist_3_pub        = self.node.create_publisher(Float64, 'wrist_3_joint/cmd_vel', 10)
         self.finger_pub         = self.node.create_publisher(Float64, 'finger_joint/cmd_vel', 10)
+
+        # Mimic joint publishers
+        self.mimic_pubs = [
+            (self.node.create_publisher(Float64, 'left_inner_knuckle_joint/cmd_vel', 10), 1.0),
+            (self.node.create_publisher(Float64, 'left_inner_finger_joint/cmd_vel', 10), -1.0),
+            (self.node.create_publisher(Float64, 'right_outer_knuckle_joint/cmd_vel', 10), -1.0),
+            (self.node.create_publisher(Float64, 'right_inner_knuckle_joint/cmd_vel', 10), 1.0),
+            (self.node.create_publisher(Float64, 'right_inner_finger_joint/cmd_vel', 10), -1.0),
+        ]
 
         # Subscribers
         self.joint_state_sub = self.node.create_subscription(
@@ -125,6 +148,9 @@ class PickPlaceEnv(gym.Env):
         self.joint_positions = np.zeros(9)
         self.joint_velocities = np.zeros(9)
         self._joint_states_received = False
+        self._joint_state_names = []
+        self._joint_state_position_map = {}
+        self._joint_state_velocity_map = {}
         self.base_pose = np.zeros(3)  # x, y, theta
         self.episode_steps = 0
         self.max_episode_steps = 600
@@ -142,12 +168,21 @@ class PickPlaceEnv(gym.Env):
         self.max_phase_reached = 0
         self.last_dist_to_obj = np.inf
         self.episode_success = False
+        self.stage_success = False
 
         self.current_phase = 0
         self.prev_distance = None
+        self.prev_action = np.zeros(self.action_space.shape[0], dtype=np.float32)
 
     def joint_state_callback(self, msg):
         n = len(msg.position)
+        self._joint_state_names = list(msg.name)
+        self._joint_state_position_map = {
+            name: float(pos) for name, pos in zip(msg.name, msg.position)
+        }
+        self._joint_state_velocity_map = {
+            name: float(vel) for name, vel in zip(msg.name, msg.velocity)
+        }
         if n >= 7:
             self.joint_positions = np.array(msg.position[:9] if n >= 9 else list(msg.position) + [0.0] * (9 - n))
             self.joint_velocities = np.array(msg.velocity[:9] if len(msg.velocity) >= 9 else
@@ -190,11 +225,53 @@ class PickPlaceEnv(gym.Env):
         gz = _BASE_SPAWN_Z + local_ee[2]
         return np.array([gx, gy, gz])
 
+    def world_to_base_vector(self, vec_world: np.ndarray) -> np.ndarray:
+        """Rotate a world-frame vector into the base frame using odometry yaw."""
+        btheta = self.base_pose[2]
+        return np.array([
+            vec_world[0] * np.cos(btheta) + vec_world[1] * np.sin(btheta),
+            -vec_world[0] * np.sin(btheta) + vec_world[1] * np.cos(btheta),
+            vec_world[2],
+        ])
+
+    def world_point_to_base(self, point_world: np.ndarray) -> np.ndarray:
+        """Express a world-frame point relative to the robot base frame."""
+        base_world = np.array([self.base_pose[0], self.base_pose[1], _BASE_SPAWN_Z])
+        return self.world_to_base_vector(point_world - base_world)
+
+    def curriculum_target_phase(self) -> int:
+        stage_targets = {
+            0: 5,  # full task
+            1: 2,  # reach/alignment
+            2: 3,  # verified grasp
+            3: 4,  # lift
+            4: 5,  # transport
+            5: 5,  # full placement
+        }
+        return stage_targets.get(self.curriculum_stage, 5)
+
+    def curriculum_completed(self) -> bool:
+        if self.curriculum_stage <= 0:
+            return self.episode_success
+        if self.curriculum_stage == 1:
+            return self.current_phase >= 2
+        if self.curriculum_stage == 2:
+            return self.grasp_verified or self.verified_grasps > 0
+        if self.curriculum_stage == 3:
+            return self.current_phase >= 4
+        if self.curriculum_stage == 4:
+            return self.current_phase >= 5
+        return self.episode_success
+
     def get_observation(self) -> np.ndarray:
         ee_pos = self.get_global_ee_pos()
         obj_pos = self.real_object_pos if self.real_object_pos is not None else self.object_pos
         # ee_to_obj: direct tracking vector — if the object moves, this updates instantly
         ee_to_obj = obj_pos - ee_pos
+        ee_to_target = self.target_pos - ee_pos
+        obj_to_target = self.target_pos - obj_pos
+        obj_in_base = self.world_point_to_base(obj_pos)
+        gripper_error = abs(self.joint_positions[6] - (0.8 if self.current_phase >= 2 else 0.0))
         obs = np.concatenate([
             self.joint_positions[:6],    # arm joint positions
             self.joint_velocities[:6],   # arm joint velocities
@@ -202,11 +279,47 @@ class PickPlaceEnv(gym.Env):
             ee_pos,                      # EE in world frame
             obj_pos,                     # object in world frame (live from Gazebo bridge)
             ee_to_obj,                   # vector from EE to object — arm tracks this to zero
+            ee_to_target,                # vector from EE to final place target
+            obj_to_target,               # vector from object to final place target
+            obj_in_base,                 # object location in the base frame
+            [gripper_error],             # phase-aware gripper opening error
             [float(self.object_grasped)],
             [float(self.current_phase)],
             self.base_pose,
+            self.prev_action,
         ])
         return obs.astype(np.float32)
+
+    def get_joint_position(self, joint_name: str, default=np.nan) -> float:
+        return float(self._joint_state_position_map.get(joint_name, default))
+
+    def get_joint_velocity(self, joint_name: str, default=np.nan) -> float:
+        return float(self._joint_state_velocity_map.get(joint_name, default))
+
+    def get_gripper_joint_snapshot(self) -> dict:
+        finger = self.get_joint_position('finger_joint', self.joint_positions[6])
+        snapshot = {
+            'finger_joint': finger,
+        }
+        for joint_name, multiplier in _GRIPPER_MIMIC_MULTIPLIERS.items():
+            pos = self.get_joint_position(joint_name)
+            snapshot[joint_name] = pos
+            snapshot[f'{joint_name}_tracking_error'] = abs(pos - finger * multiplier) if not np.isnan(pos) else np.nan
+        return snapshot
+
+    def wait(self, steps: int = 1, action: np.ndarray | None = None):
+        if action is None:
+            action = np.zeros(self.action_space.shape[0], dtype=np.float32)
+        obs = None
+        reward = 0.0
+        terminated = False
+        truncated = False
+        info = {}
+        for _ in range(steps):
+            obs, reward, terminated, truncated, info = self.step(action)
+            if terminated or truncated:
+                break
+        return obs, reward, terminated, truncated, info
 
     def compute_reward(self):
         reward = 0.0
@@ -214,6 +327,7 @@ class PickPlaceEnv(gym.Env):
 
         gripper_pos = self.joint_positions[6]  # finger_joint: 0=open, ~0.8=closed
         ee_global = self.get_global_ee_pos()
+        local_ee = self.get_end_effector_pos()
         self.max_phase_reached = max(self.max_phase_reached, self.current_phase)
 
         # Base tipping penalty: if robot falls over, base height deviates significantly
@@ -248,6 +362,15 @@ class PickPlaceEnv(gym.Env):
             if abs(dx_local) < 0.225 and abs(dy_local) < 0.175:
                 return -300.0, True  # base crushed the object — end episode
 
+        # Arm-backward constraint: arm pointing behind chassis center risks self-collision.
+        # local_ee[0] < 0 means EE is behind the arm mount; < -0.10m is clearly bad.
+        if local_ee[0] < -0.10:
+            reward -= 5.0 + 20.0 * abs(local_ee[0] + 0.10)
+
+        # EE into ground constraint (tighter): during non-grasp phases EE should stay
+        # well above the floor (0.05m vs the hard 0.03m termination threshold).
+        if ee_global[2] < 0.05 and self.current_phase not in [1, 2, 5]:
+            reward -= 30.0 * (1.0 - ee_global[2] / 0.05)
 
         if self.current_phase == 0:
             target_xy = obj_pos[:2]
@@ -388,6 +511,9 @@ class PickPlaceEnv(gym.Env):
             # Penalise opening gripper while lifting — object will fall
             if gripper_pos < 0.3:
                 reward -= 20.0
+            # EE should be rising during lift; penalise staying near ground
+            if ee_global[2] < 0.10:
+                reward -= 8.0 * (1.0 - ee_global[2] / 0.10)
 
             # Verify grasp: real object should rise with EE; if it stays on the floor, abort.
             if self.real_object_pos is not None:
@@ -421,6 +547,9 @@ class PickPlaceEnv(gym.Env):
             # Penalise opening gripper during transport — object will fall
             if gripper_pos < 0.3:
                 reward -= 20.0
+            # EE should stay elevated during transport
+            if ee_global[2] < 0.12:
+                reward -= 8.0 * (1.0 - ee_global[2] / 0.12)
 
             target_xy = self.target_pos[:2]
             ee_xy = ee_global[:2]
@@ -465,10 +594,17 @@ class PickPlaceEnv(gym.Env):
             if abs(angle_err) > 0.5:
                 reward -= abs(angle_err) * 0.2
 
+        if self.curriculum_completed():
+            self.stage_success = True
+            if self.curriculum_stage > 0 and not self.episode_success:
+                reward += 300.0
+                terminated = True
+
         return reward, terminated
 
     def step(self, action):
         rclpy.spin_once(self.node, timeout_sec=0.005)
+        action = np.asarray(action, dtype=np.float32)
 
         # Position delta control: target = current + delta, then P-drive toward target.
         # Max delta per step = 0.25 rad → faster reach toward object.
@@ -496,6 +632,8 @@ class PickPlaceEnv(gym.Env):
 
         gripper_vel = 0.5 if gripper_command > 0 else -0.5
         self.finger_pub.publish(Float64(data=gripper_vel))
+        for pub, mult in self.mimic_pubs:
+            pub.publish(Float64(data=gripper_vel * mult))
 
         twist_msg = Twist()
         twist_msg.linear.x = base_linear_vel
@@ -508,6 +646,7 @@ class PickPlaceEnv(gym.Env):
             self.object_pos[2] -= 0.05
 
         time.sleep(0.002)
+        self.prev_action = action.copy()
 
         obs = self.get_observation()
         reward, terminated = self.compute_reward()
@@ -524,8 +663,13 @@ class PickPlaceEnv(gym.Env):
             'grasp_attempts': int(self.grasp_attempts),
             'verified_grasps': int(self.verified_grasps),
             'real_object_z': float(self.real_object_pos[2]) if self.real_object_pos is not None else float('nan'),
+            'object_height_delta': float((self.real_object_pos[2] - self.object_start_pos[2])) if self.real_object_pos is not None else float('nan'),
             'dist_to_obj': float(self.last_dist_to_obj),
+            'finger_joint': float(self.get_joint_position('finger_joint', self.joint_positions[6])),
             'is_success': bool(self.episode_success),
+            'curriculum_stage': int(self.curriculum_stage),
+            'curriculum_target_phase': int(self.curriculum_target_phase()),
+            'stage_success': bool(self.stage_success),
         }
 
         return obs, reward, terminated, truncated, info
@@ -621,6 +765,8 @@ class PickPlaceEnv(gym.Env):
         self.max_phase_reached = self.current_phase
         self.last_dist_to_obj = np.inf
         self.episode_success = False
+        self.stage_success = False
+        self.prev_action = np.zeros(self.action_space.shape[0], dtype=np.float32)
 
         # Randomize object XY ±3cm so the policy generalises, not memorises one spot
         rng = np.random.default_rng(seed)
