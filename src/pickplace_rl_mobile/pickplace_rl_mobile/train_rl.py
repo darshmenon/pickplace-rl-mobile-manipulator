@@ -40,10 +40,14 @@ class SaveBestVecNormalizeCallback(BaseCallback):
         return True
 
 
-def make_env(monitor_path=None, ros_domain_id=None, gz_partition=None):
+def make_env(monitor_path=None, ros_domain_id=None, gz_partition=None, curriculum_stage=0):
     """Factory that returns a thunk creating a monitored PickPlaceEnv."""
     def _init():
-        env = PickPlaceEnv(ros_domain_id=ros_domain_id, gz_partition=gz_partition)
+        env = PickPlaceEnv(
+            ros_domain_id=ros_domain_id,
+            gz_partition=gz_partition,
+            curriculum_stage=curriculum_stage,
+        )
         # Log additional info metrics in monitor.csv
         kw = (
             'phase',
@@ -56,6 +60,9 @@ def make_env(monitor_path=None, ros_domain_id=None, gz_partition=None):
             'dist_to_obj',
             'finger_joint',
             'is_success',
+            'curriculum_stage',
+            'curriculum_target_phase',
+            'stage_success',
         )
         return Monitor(env, filename=monitor_path, info_keywords=kw)
     return _init
@@ -65,8 +72,9 @@ def make_env(monitor_path=None, ros_domain_id=None, gz_partition=None):
 _MULTI_WORLD_BASE_DOMAIN = 20
 
 
-def train(total_timesteps=500000, save_dir='./models', n_envs=1, load_model=None):
+def train(total_timesteps=500000, save_dir='./models', n_envs=1, load_model=None, curriculum_stage=0):
     os.makedirs(save_dir, exist_ok=True)
+    load_model = load_model.strip() if isinstance(load_model, str) else load_model
 
     vecnorm_path = os.path.join(save_dir, 'vecnormalize.pkl')
     monitor_dir = os.path.join(save_dir, 'monitor')
@@ -76,18 +84,25 @@ def train(total_timesteps=500000, save_dir='./models', n_envs=1, load_model=None
     os.makedirs(eval_monitor_dir, exist_ok=True)
     os.makedirs(best_model_dir, exist_ok=True)
 
-    print(f"Creating {n_envs} parallel pick-and-place environment(s)...")
+    print(
+        f"Creating {n_envs} parallel pick-and-place environment(s) "
+        f"for curriculum stage {curriculum_stage}..."
+    )
     if n_envs > 1:
         raw_env = SubprocVecEnv([
             make_env(
                      monitor_path=os.path.join(monitor_dir, f'train_env_{i}.monitor.csv'),
                      ros_domain_id=_MULTI_WORLD_BASE_DOMAIN + i,
-                     gz_partition=f'sim_{i}')
+                     gz_partition=f'sim_{i}',
+                     curriculum_stage=curriculum_stage)
             for i in range(n_envs)
         ])
     else:
         raw_env = DummyVecEnv([
-            make_env(monitor_path=os.path.join(monitor_dir, 'train_env_0.monitor.csv'))
+            make_env(
+                monitor_path=os.path.join(monitor_dir, 'train_env_0.monitor.csv'),
+                curriculum_stage=curriculum_stage,
+            )
         ])
 
     # VecNormalize: normalises obs and rewards online — critical when obs spans
@@ -101,9 +116,12 @@ def train(total_timesteps=500000, save_dir='./models', n_envs=1, load_model=None
         env = VecNormalize(raw_env, norm_obs=True, norm_reward=True, clip_obs=10.0)
 
     eval_raw_env = DummyVecEnv([
-        make_env(monitor_path=os.path.join(eval_monitor_dir, 'eval_env_0.monitor.csv'))
+        make_env(
+            monitor_path=os.path.join(eval_monitor_dir, 'eval_env_0.monitor.csv'),
+            curriculum_stage=curriculum_stage,
+        )
     ])
-    if os.path.exists(vecnorm_path):
+    if load_model and os.path.exists(vecnorm_path):
         eval_env = VecNormalize.load(vecnorm_path, eval_raw_env)
     else:
         eval_env = VecNormalize(eval_raw_env, norm_obs=True, norm_reward=False, clip_obs=10.0)
@@ -211,10 +229,18 @@ def main():
                         help='Number of parallel Gazebo worlds (default: 1)')
     parser.add_argument('--load-model', type=str, default=None,
                         help='Path to a saved model to resume training (default: None)')
+    parser.add_argument('--curriculum-stage', type=int, default=0,
+                        help='Curriculum stage: 0=full, 1=reach, 2=grasp, 3=lift, 4=transport, 5=place')
 
     args, unknown = parser.parse_known_args()
 
-    train(total_timesteps=args.timesteps, save_dir=args.save_dir, n_envs=args.n_envs, load_model=args.load_model)
+    train(
+        total_timesteps=args.timesteps,
+        save_dir=args.save_dir,
+        n_envs=args.n_envs,
+        load_model=args.load_model,
+        curriculum_stage=args.curriculum_stage,
+    )
 
 
 if __name__ == '__main__':

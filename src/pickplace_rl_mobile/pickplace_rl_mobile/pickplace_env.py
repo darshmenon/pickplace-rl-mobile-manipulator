@@ -64,7 +64,7 @@ class PickPlaceEnv(gym.Env):
     """
     Gymnasium environment for pick-and-place RL training.
 
-    Observation (43): [joint_pos(6), joint_vel(6), finger_pos(1), ee_pos(3), obj_pos(3),
+    Observation (46): [joint_pos(6), joint_vel(6), finger_pos(1), ee_pos(3), obj_pos(3),
                        ee_to_obj(3), ee_to_target(3), obj_to_target(3),
                        obj_in_base(3), gripper_error(1), grasped(1), phase(1),
                        base_pose(3), prev_action(9)]
@@ -104,11 +104,11 @@ class PickPlaceEnv(gym.Env):
         # Observation space: 6 joint pos + 6 joint vel + 1 finger pos + 3 ee + 3 obj
         #                  + 3 ee_to_obj + 3 ee_to_target + 3 obj_to_target
         #                  + 3 obj_in_base + 1 gripper_error + 1 grasped + 1 phase
-        #                  + 3 base pose + 9 prev_action = 43
+        #                  + 3 base pose + 9 prev_action = 46
         self.observation_space = spaces.Box(
             low=-np.inf,
             high=np.inf,
-            shape=(43,),
+            shape=(46,),
             dtype=np.float32
         )
 
