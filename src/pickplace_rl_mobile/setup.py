@@ -12,7 +12,6 @@ setup(
         ('share/' + package_name, ['package.xml']),
         ('share/' + package_name + '/launch', [
             'launch/display_launch.py',
-            'launch/gazebo_launch.py',
             'launch/gazebo.launch.py',
             'launch/rl_train.launch.py',
             'launch/standalone_rl_training.launch.py',
