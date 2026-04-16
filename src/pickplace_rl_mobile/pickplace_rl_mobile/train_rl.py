@@ -84,6 +84,16 @@ def train(total_timesteps=500000, save_dir='./models', n_envs=1, load_model=None
     os.makedirs(eval_monitor_dir, exist_ok=True)
     os.makedirs(best_model_dir, exist_ok=True)
 
+    load_model_dir = os.path.dirname(load_model) if load_model else ''
+    vecnorm_candidates = [
+        vecnorm_path,
+        os.path.join(load_model_dir, 'vecnormalize.pkl') if load_model_dir else '',
+        os.path.join(load_model_dir, 'best_vecnormalize.pkl') if load_model_dir else '',
+        os.path.join(save_dir, 'best_model', 'best_vecnormalize.pkl'),
+    ]
+    vecnorm_candidates = [path for path in vecnorm_candidates if path]
+    resume_vecnorm_path = next((path for path in vecnorm_candidates if os.path.exists(path)), None)
+
     print(
         f"Creating {n_envs} parallel pick-and-place environment(s) "
         f"for curriculum stage {curriculum_stage}..."
@@ -107,9 +117,9 @@ def train(total_timesteps=500000, save_dir='./models', n_envs=1, load_model=None
 
     # VecNormalize: normalises obs and rewards online — critical when obs spans
     # joint angles (rad), positions (m), and velocities (rad/s) at very different scales.
-    if load_model and os.path.exists(vecnorm_path):
-        print(f"Loading VecNormalize stats from {vecnorm_path}...")
-        env = VecNormalize.load(vecnorm_path, raw_env)
+    if load_model and resume_vecnorm_path:
+        print(f"Loading VecNormalize stats from {resume_vecnorm_path}...")
+        env = VecNormalize.load(resume_vecnorm_path, raw_env)
         env.training = True
         env.norm_reward = True
     else:
@@ -121,8 +131,8 @@ def train(total_timesteps=500000, save_dir='./models', n_envs=1, load_model=None
             curriculum_stage=curriculum_stage,
         )
     ])
-    if load_model and os.path.exists(vecnorm_path):
-        eval_env = VecNormalize.load(vecnorm_path, eval_raw_env)
+    if load_model and resume_vecnorm_path:
+        eval_env = VecNormalize.load(resume_vecnorm_path, eval_raw_env)
     else:
         eval_env = VecNormalize(eval_raw_env, norm_obs=True, norm_reward=False, clip_obs=10.0)
     eval_env.training = False
@@ -170,8 +180,12 @@ def train(total_timesteps=500000, save_dir='./models', n_envs=1, load_model=None
         print("Set gradient_steps=4 on resume")
 
         # Load replay buffer if available — avoids cold-start problem entirely.
-        replay_buf_path = os.path.join(save_dir, 'replay_buffer.pkl')
-        if os.path.exists(replay_buf_path):
+        replay_buf_candidates = [
+            os.path.join(save_dir, 'replay_buffer.pkl'),
+            os.path.join(load_model_dir, 'replay_buffer.pkl') if load_model_dir else '',
+        ]
+        replay_buf_path = next((path for path in replay_buf_candidates if path and os.path.exists(path)), None)
+        if replay_buf_path:
             model.load_replay_buffer(replay_buf_path)
             print(f"Loaded replay buffer ({model.replay_buffer.size()} transitions)")
         else:

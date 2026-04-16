@@ -156,8 +156,8 @@ class PickPlaceEnv(gym.Env):
         self.max_episode_steps = 600
 
         # Targets
-        self.object_start_pos = np.array([0.6, 0.0, 0.055])  # world frame
-        self.target_pos = np.array([0.6, 0.5, 0.1])
+        self.object_start_pos = np.array([0.6, 0.0, 0.1325])  # world frame — on top of platform
+        self.target_pos = np.array([0.6, 0.5, 0.15])
         self.object_pos = self.object_start_pos.copy()
         self.object_grasped = False
         self.grasp_verified = False
@@ -459,6 +459,8 @@ class PickPlaceEnv(gym.Env):
 
             # For a 6cm cube, side-grasp target = object center (EE at same height).
             # No upward offset — fingers wrap around the sides at cube midpoint.
+            xy_dist = np.linalg.norm(ee_global[:2] - ref_obj[:2])
+            z_dist = abs(ee_global[2] - ref_obj[2])
             dist_to_obj = np.linalg.norm(ee_global - ref_obj)
             self.last_dist_to_obj = dist_to_obj
 
@@ -480,17 +482,31 @@ class PickPlaceEnv(gym.Env):
             if dist_to_obj < 0.03:
                 reward += 10.0
 
+            # Reward true side-grasp alignment explicitly so the policy doesn't
+            # learn to close while hovering high or offset.
+            if xy_dist < 0.03:
+                reward += 10.0 * (1.0 - xy_dist / 0.03)
+            if z_dist < 0.025:
+                reward += 8.0 * (1.0 - z_dist / 0.025)
+            if xy_dist < 0.025 and z_dist < 0.02:
+                reward += 12.0
+
             # Reward gripper closing when already near object (actively encourage grasping)
-            if gripper_pos > 0.4 and dist_to_obj < 0.06:
+            if gripper_pos > 0.4 and xy_dist < 0.04 and z_dist < 0.03:
                 reward += 8.0 * gripper_pos  # more reward the more closed the gripper
 
             # Penalty for opening gripper when very close (don't retreat from grasp)
             if gripper_pos < 0.2 and dist_to_obj < 0.05:
                 reward -= 5.0
 
+            # Closing while vertically misaligned tends to smack or skim the cube
+            # instead of wrapping it, so make that behavior clearly unattractive.
+            if gripper_pos > 0.5 and z_dist > 0.04:
+                reward -= 10.0 * min(z_dist, 0.10)
+
             # A close, closed gripper starts a lift attempt. The large grasp
             # reward is withheld until the real Gazebo object actually rises.
-            if gripper_pos > 0.7 and dist_to_obj < 0.04:
+            if gripper_pos > 0.7 and xy_dist < 0.03 and z_dist < 0.025:
                 self.object_grasped = True
                 self.grasp_verified = False
                 self.current_phase = 3
@@ -518,11 +534,13 @@ class PickPlaceEnv(gym.Env):
             # Verify grasp: real object should rise with EE; if it stays on the floor, abort.
             if self.real_object_pos is not None:
                 self.grasp_verify_steps += 1
+                obj_xy_err = np.linalg.norm(self.real_object_pos[:2] - ee_global[:2])
                 if self.real_object_pos[2] >= 0.08:
                     if not self.grasp_verified:
                         self.grasp_verified = True
                         self.verified_grasps += 1
                         reward += 1000.0
+                    reward += max(0.0, 5.0 * (1.0 - obj_xy_err / 0.05))
                 elif self.grasp_verify_steps > 15:
                     # Object didn't lift — grasp failed, go back to phase 2
                     self.object_grasped = False
@@ -772,7 +790,7 @@ class PickPlaceEnv(gym.Env):
         rng = np.random.default_rng(seed)
         ox = 0.6 + rng.uniform(-0.03, 0.03)
         oy = 0.0 + rng.uniform(-0.03, 0.03)
-        oz = 0.055
+        oz = 0.1325  # on top of platform (platform top=0.10m + cube half=0.0325m)
         self.object_start_pos = np.array([ox, oy, oz])
         self.object_pos = self.object_start_pos.copy()
         self.real_object_pos = None
