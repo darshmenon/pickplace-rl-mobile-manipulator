@@ -839,5 +839,31 @@
       <initial_velocity>0.0</initial_velocity>
       <topic>/finger_joint/cmd_vel</topic>
     </plugin>
+    <!-- Mimic joints manual controllers -->
+    <plugin filename="gz-sim-joint-controller-system" name="gz::sim::systems::JointController">
+      <joint_name>left_inner_knuckle_joint</joint_name>
+      <initial_velocity>0.0</initial_velocity>
+      <topic>/left_inner_knuckle_joint/cmd_vel</topic>
+    </plugin>
+    <plugin filename="gz-sim-joint-controller-system" name="gz::sim::systems::JointController">
+      <joint_name>left_inner_finger_joint</joint_name>
+      <initial_velocity>0.0</initial_velocity>
+      <topic>/left_inner_finger_joint/cmd_vel</topic>
+    </plugin>
+    <plugin filename="gz-sim-joint-controller-system" name="gz::sim::systems::JointController">
+      <joint_name>right_outer_knuckle_joint</joint_name>
+      <initial_velocity>0.0</initial_velocity>
+      <topic>/right_outer_knuckle_joint/cmd_vel</topic>
+    </plugin>
+    <plugin filename="gz-sim-joint-controller-system" name="gz::sim::systems::JointController">
+      <joint_name>right_inner_knuckle_joint</joint_name>
+      <initial_velocity>0.0</initial_velocity>
+      <topic>/right_inner_knuckle_joint/cmd_vel</topic>
+    </plugin>
+    <plugin filename="gz-sim-joint-controller-system" name="gz::sim::systems::JointController">
+      <joint_name>right_inner_finger_joint</joint_name>
+      <initial_velocity>0.0</initial_velocity>
+      <topic>/right_inner_finger_joint/cmd_vel</topic>
+    </plugin>
   </gazebo>
 </robot>

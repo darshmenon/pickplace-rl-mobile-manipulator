@@ -19,6 +19,20 @@ for arg in "$@"; do
     fi
 done
 
+# Fall back to headless mode when no usable GUI display is available.
+# This keeps training launchable from remote shells, CI, and sandboxed sessions.
+if [ "$HEADLESS" = false ]; then
+    if [ -z "${DISPLAY:-}" ]; then
+        echo "[run_rl_training] DISPLAY is not set; launching headless instead."
+        HEADLESS=true
+    elif ! command -v xdpyinfo >/dev/null 2>&1; then
+        echo "[run_rl_training] xdpyinfo not found; keeping GUI launch request as-is."
+    elif ! xdpyinfo >/dev/null 2>&1; then
+        echo "[run_rl_training] DISPLAY '$DISPLAY' is not reachable; launching headless instead."
+        HEADLESS=true
+    fi
+fi
+
 ros2 launch pickplace_rl_mobile gazebo.launch.py headless:=$HEADLESS &
 
 if [ -n "$MODEL_PATH" ]; then

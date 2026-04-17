@@ -2,20 +2,20 @@
   <model name="cylinder">
     <static>false</static>
     <link name="link">
-      <pose>0 0 0.1 0 0 0</pose>
+      <pose>0 0 0.14 0 0 0</pose>
       <collision name="collision">
         <geometry>
           <cylinder>
-            <radius>0.05</radius>
-            <length>0.2</length>
+            <radius>0.06</radius>
+            <length>0.28</length>
           </cylinder>
         </geometry>
       </collision>
       <visual name="visual">
         <geometry>
           <cylinder>
-            <radius>0.05</radius>
-            <length>0.2</length>
+            <radius>0.06</radius>
+            <length>0.28</length>
           </cylinder>
         </geometry>
         <material>

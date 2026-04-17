@@ -88,6 +88,8 @@
             <!-- Mimic joints (no command interfaces, initial value same as finger_joint) -->
             <!-- right_outer_knuckle_joint -->
             <joint name="right_outer_knuckle_joint">
+                <param name="mimic">finger_joint</param>
+                <param name="multiplier">-1</param>
                 <state_interface name="position">
                     <param name="initial_value">${initial_positions['finger_joint']}</param>
                 </state_interface>
@@ -99,6 +101,8 @@
 
             <!-- right_inner_knuckle_joint -->
             <joint name="right_inner_knuckle_joint">
+                <param name="mimic">finger_joint</param>
+                <param name="multiplier">1</param>
                 <state_interface name="position">
                     <param name="initial_value">${initial_positions['finger_joint']}</param>
                 </state_interface>
@@ -110,6 +114,8 @@
 
             <!-- left_inner_knuckle_joint -->
             <joint name="left_inner_knuckle_joint">
+                <param name="mimic">finger_joint</param>
+                <param name="multiplier">1</param>
                 <state_interface name="position">
                     <param name="initial_value">${initial_positions['finger_joint']}</param>
                 </state_interface>
@@ -121,6 +127,8 @@
 
             <!-- right_inner_finger_joint -->
             <joint name="right_inner_finger_joint">
+                <param name="mimic">finger_joint</param>
+                <param name="multiplier">-1</param>
                 <state_interface name="position">
                     <param name="initial_value">${initial_positions['finger_joint']}</param>
                 </state_interface>
@@ -132,6 +140,8 @@
 
             <!-- left_inner_finger_joint -->
             <joint name="left_inner_finger_joint">
+                <param name="mimic">finger_joint</param>
+                <param name="multiplier">-1</param>
                 <state_interface name="position">
                     <param name="initial_value">${initial_positions['finger_joint']}</param>
                 </state_interface>

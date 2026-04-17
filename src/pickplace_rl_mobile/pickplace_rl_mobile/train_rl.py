@@ -5,6 +5,7 @@ import math
 import os
 import torch
 from sb3_contrib import TQC
+from stable_baselines3.common.save_util import load_from_zip_file
 from stable_baselines3.common.callbacks import CheckpointCallback, EvalCallback, BaseCallback
 from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.vec_env import SubprocVecEnv, DummyVecEnv, VecNormalize
@@ -40,13 +41,63 @@ class SaveBestVecNormalizeCallback(BaseCallback):
         return True
 
 
-def make_env(monitor_path=None, ros_domain_id=None, gz_partition=None, curriculum_stage=0):
+def _infer_observation_mode(load_model: str | None) -> str:
+    if not load_model:
+        return 'full'
+    try:
+        data, _, _ = load_from_zip_file(load_model, device='auto')
+        obs_shape = tuple(data['observation_space'].shape)
+    except Exception as exc:
+        print(f"Could not inspect checkpoint observation space ({exc}); using full observation mode")
+        return 'full'
+
+    if obs_shape == (27,):
+        print(f"Detected legacy checkpoint observation space {obs_shape}; enabling legacy27 observation mode")
+        return 'legacy27'
+    print(f"Detected checkpoint observation space {obs_shape}; using full observation mode")
+    return 'full'
+
+
+def _load_vecnormalize_or_fallback(vecnorm_path: str, raw_env, norm_reward: bool):
+    """Load VecNormalize stats when compatible, otherwise start fresh."""
+    try:
+        env = VecNormalize.load(vecnorm_path, raw_env)
+        env.training = True
+        env.norm_reward = norm_reward
+        return env
+    except Exception as exc:
+        print(f"Warning: could not load VecNormalize stats from {vecnorm_path} ({exc}); starting fresh")
+        return VecNormalize(raw_env, norm_obs=True, norm_reward=norm_reward, clip_obs=10.0)
+
+
+def _reset_replay_buffer(model) -> None:
+    """Recreate the replay buffer to match the current env spaces."""
+    replay_buffer_type = type(model.replay_buffer)
+    handle_timeout_termination = getattr(model.replay_buffer, 'handle_timeout_termination', True)
+    model.replay_buffer = replay_buffer_type(
+        model.buffer_size,
+        model.observation_space,
+        model.action_space,
+        device=model.device,
+        n_envs=model.n_envs,
+        optimize_memory_usage=model.optimize_memory_usage,
+        handle_timeout_termination=handle_timeout_termination,
+    )
+
+
+def _schedule_replay_prefill(model, pre_fill: int = 20000) -> None:
+    model.learning_starts = model.num_timesteps + pre_fill
+    print(f"Pre-filling fresh replay buffer with {pre_fill} steps before updates")
+
+
+def make_env(monitor_path=None, ros_domain_id=None, gz_partition=None, curriculum_stage=0, observation_mode='full'):
     """Factory that returns a thunk creating a monitored PickPlaceEnv."""
     def _init():
         env = PickPlaceEnv(
             ros_domain_id=ros_domain_id,
             gz_partition=gz_partition,
             curriculum_stage=curriculum_stage,
+            observation_mode=observation_mode,
         )
         # Log additional info metrics in monitor.csv
         kw = (
@@ -75,6 +126,7 @@ _MULTI_WORLD_BASE_DOMAIN = 20
 def train(total_timesteps=500000, save_dir='./models', n_envs=1, load_model=None, curriculum_stage=0):
     os.makedirs(save_dir, exist_ok=True)
     load_model = load_model.strip() if isinstance(load_model, str) else load_model
+    observation_mode = _infer_observation_mode(load_model)
 
     vecnorm_path = os.path.join(save_dir, 'vecnormalize.pkl')
     monitor_dir = os.path.join(save_dir, 'monitor')
@@ -104,7 +156,8 @@ def train(total_timesteps=500000, save_dir='./models', n_envs=1, load_model=None
                      monitor_path=os.path.join(monitor_dir, f'train_env_{i}.monitor.csv'),
                      ros_domain_id=_MULTI_WORLD_BASE_DOMAIN + i,
                      gz_partition=f'sim_{i}',
-                     curriculum_stage=curriculum_stage)
+                     curriculum_stage=curriculum_stage,
+                     observation_mode=observation_mode)
             for i in range(n_envs)
         ])
     else:
@@ -112,6 +165,7 @@ def train(total_timesteps=500000, save_dir='./models', n_envs=1, load_model=None
             make_env(
                 monitor_path=os.path.join(monitor_dir, 'train_env_0.monitor.csv'),
                 curriculum_stage=curriculum_stage,
+                observation_mode=observation_mode,
             )
         ])
 
@@ -119,9 +173,7 @@ def train(total_timesteps=500000, save_dir='./models', n_envs=1, load_model=None
     # joint angles (rad), positions (m), and velocities (rad/s) at very different scales.
     if load_model and resume_vecnorm_path:
         print(f"Loading VecNormalize stats from {resume_vecnorm_path}...")
-        env = VecNormalize.load(resume_vecnorm_path, raw_env)
-        env.training = True
-        env.norm_reward = True
+        env = _load_vecnormalize_or_fallback(resume_vecnorm_path, raw_env, norm_reward=True)
     else:
         env = VecNormalize(raw_env, norm_obs=True, norm_reward=True, clip_obs=10.0)
 
@@ -129,10 +181,11 @@ def train(total_timesteps=500000, save_dir='./models', n_envs=1, load_model=None
         make_env(
             monitor_path=os.path.join(eval_monitor_dir, 'eval_env_0.monitor.csv'),
             curriculum_stage=curriculum_stage,
+            observation_mode=observation_mode,
         )
     ])
     if load_model and resume_vecnorm_path:
-        eval_env = VecNormalize.load(resume_vecnorm_path, eval_raw_env)
+        eval_env = _load_vecnormalize_or_fallback(resume_vecnorm_path, eval_raw_env, norm_reward=False)
     else:
         eval_env = VecNormalize(eval_raw_env, norm_obs=True, norm_reward=False, clip_obs=10.0)
     eval_env.training = False
@@ -186,14 +239,27 @@ def train(total_timesteps=500000, save_dir='./models', n_envs=1, load_model=None
         ]
         replay_buf_path = next((path for path in replay_buf_candidates if path and os.path.exists(path)), None)
         if replay_buf_path:
-            model.load_replay_buffer(replay_buf_path)
-            print(f"Loaded replay buffer ({model.replay_buffer.size()} transitions)")
+            try:
+                model.load_replay_buffer(replay_buf_path)
+                replay_obs_shape = tuple(model.replay_buffer.observations.shape[2:])
+                expected_obs_shape = tuple(model.observation_space.shape)
+                if replay_obs_shape != expected_obs_shape:
+                    print(
+                        f"Warning: replay buffer obs shape {replay_obs_shape} does not match "
+                        f"env shape {expected_obs_shape}; resetting buffer"
+                    )
+                    _reset_replay_buffer(model)
+                    _schedule_replay_prefill(model)
+                else:
+                    print(f"Loaded replay buffer ({model.replay_buffer.size()} transitions)")
+            except Exception as exc:
+                print(f"Warning: could not load replay buffer from {replay_buf_path} ({exc})")
+                _reset_replay_buffer(model)
+                _schedule_replay_prefill(model)
         else:
             # No saved buffer — pre-fill with policy rollouts before first update
             # so TQC has a diverse starting distribution to learn from.
-            pre_fill = 20000
-            model.learning_starts = model.num_timesteps + pre_fill
-            print(f"No replay buffer found — pre-filling with {pre_fill} steps before updates")
+            _schedule_replay_prefill(model)
     else:
         print("Initializing new TQC model...")
         model = TQC(

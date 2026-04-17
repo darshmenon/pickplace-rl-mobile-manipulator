@@ -24,6 +24,15 @@ def resolve_package_uris(urdf_str):
     return re.sub(r'package://([^/]+)/([^"\'>\s]+)', replace, urdf_str)
 
 
+def get_pickplace_share_dir():
+    """Resolve the active pickplace package share dir without trusting a stale ament entry."""
+    launch_dir = os.path.dirname(os.path.abspath(__file__))
+    source_share = os.path.dirname(launch_dir)
+    if os.path.exists(os.path.join(source_share, 'urdf', 'mobile_ur3.urdf')):
+        return source_share
+    return get_package_share_directory('pickplace_rl_mobile')
+
+
 def generate_launch_description():
 
     headless_arg = DeclareLaunchArgument(
@@ -31,7 +40,7 @@ def generate_launch_description():
         description='Run Gazebo headless (no GUI) for faster training fps'
     )
 
-    pkg_dir = get_package_share_directory('pickplace_rl_mobile')
+    pkg_dir = get_pickplace_share_dir()
     world_path = os.path.join(pkg_dir, 'worlds', 'pickplace_world.world')
     urdf_path = os.path.join(pkg_dir, 'urdf', 'mobile_ur3.urdf')
     ur_description_share = get_package_share_directory('ur_description')

@@ -46,7 +46,7 @@ class ImageRecorder(Node):
                 return True
         return False
 
-def test_policy(model_path, num_episodes=5):
+def test_policy(model_path, num_episodes=5, curriculum_stage=0):
     """
     Test a trained policy and record images.
     """
@@ -72,7 +72,7 @@ def test_policy(model_path, num_episodes=5):
     vecnorm_path = next((p for p in vecnorm_candidates if os.path.exists(p)), None)
 
     try:
-        env = DummyVecEnv([lambda: PickPlaceEnv()])
+        env = DummyVecEnv([lambda: PickPlaceEnv(curriculum_stage=curriculum_stage)])
         if vecnorm_path:
             print(f"Loading VecNormalize stats from {vecnorm_path}...")
             env = VecNormalize.load(vecnorm_path, env)
@@ -158,6 +158,7 @@ def test_policy(model_path, num_episodes=5):
     print(f"Average reward: {np.mean(episode_rewards):.2f}")
     print(f"Verified grasps: {verified_grasps}/{num_episodes}")
     print(f"Max phase histogram: {phase_counts}")
+    print(f"Curriculum stage: {curriculum_stage}")
     print("="*50)
     
     # Cleanup
@@ -171,10 +172,12 @@ def main():
                         help='Path to trained model')
     parser.add_argument('--episodes', type=int, default=5,
                         help='Number of test episodes')
+    parser.add_argument('--curriculum-stage', type=int, default=0,
+                        help='Curriculum stage used for evaluation env')
     
     args = parser.parse_args()
     
-    test_policy(args.model, args.episodes)
+    test_policy(args.model, args.episodes, args.curriculum_stage)
 
 if __name__ == '__main__':
     main()

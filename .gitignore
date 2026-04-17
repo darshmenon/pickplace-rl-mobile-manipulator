@@ -1,3 +1,13 @@
 log/
 build/
 install/
+__pycache__/
+*.pyc
+.codex
+.config/
+.ignition/
+.ros_log/
+.sdformat/
+rl_models/replay_buffer.pkl
+rl_models/monitor/
+rl_models/eval_monitor/
