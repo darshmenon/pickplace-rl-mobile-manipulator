@@ -74,11 +74,19 @@ class PickPlaceEnv(gym.Env):
     this immediately reflects the new direction/distance the arm needs to travel.
     """
 
-    def __init__(self, namespace='', ros_domain_id=None, gz_partition=None, curriculum_stage=0):
+    def __init__(
+        self,
+        namespace='',
+        ros_domain_id=None,
+        gz_partition=None,
+        curriculum_stage=0,
+        observation_mode='full',
+    ):
         super().__init__()
 
         self.gz_partition = gz_partition  # stored for subprocess calls (e.g. _spawn_object)
         self.curriculum_stage = int(curriculum_stage)
+        self.observation_mode = observation_mode
 
         # Must be set before rclpy.init() so the node joins the right domain
         if ros_domain_id is not None:
@@ -101,14 +109,13 @@ class PickPlaceEnv(gym.Env):
             dtype=np.float32
         )
 
-        # Observation space: 6 joint pos + 6 joint vel + 1 finger pos + 3 ee + 3 obj
-        #                  + 3 ee_to_obj + 3 ee_to_target + 3 obj_to_target
-        #                  + 3 obj_in_base + 1 gripper_error + 1 grasped + 1 phase
-        #                  + 3 base pose + 9 prev_action = 46
+        # Observation space: full mode keeps the richer 46-dim state used by newer
+        # runs, while legacy27 preserves compatibility with older checkpoints.
+        obs_dim = 27 if self.observation_mode == 'legacy27' else 46
         self.observation_space = spaces.Box(
             low=-np.inf,
             high=np.inf,
-            shape=(46,),
+            shape=(obs_dim,),
             dtype=np.float32
         )
 
@@ -272,7 +279,7 @@ class PickPlaceEnv(gym.Env):
         obj_to_target = self.target_pos - obj_pos
         obj_in_base = self.world_point_to_base(obj_pos)
         gripper_error = abs(self.joint_positions[6] - (0.8 if self.current_phase >= 2 else 0.0))
-        obs = np.concatenate([
+        full_obs = np.concatenate([
             self.joint_positions[:6],    # arm joint positions
             self.joint_velocities[:6],   # arm joint velocities
             [self.joint_positions[6]],   # finger_joint position
@@ -288,7 +295,14 @@ class PickPlaceEnv(gym.Env):
             self.base_pose,
             self.prev_action,
         ])
-        return obs.astype(np.float32)
+        if self.observation_mode == 'legacy27':
+            legacy_obs = np.concatenate([
+                full_obs[:22],   # joints, EE/object positions, ee_to_obj
+                full_obs[32:34], # grasped, phase
+                full_obs[34:37], # base pose
+            ])
+            return legacy_obs.astype(np.float32)
+        return full_obs.astype(np.float32)
 
     def get_joint_position(self, joint_name: str, default=np.nan) -> float:
         return float(self._joint_state_position_map.get(joint_name, default))
@@ -532,8 +546,10 @@ class PickPlaceEnv(gym.Env):
                 reward -= 8.0 * (1.0 - ee_global[2] / 0.10)
 
             # Verify grasp: real object should rise with EE; if it stays on the floor, abort.
+            # grasp_verify_steps increments unconditionally so the timeout fires even
+            # when the Gazebo TF bridge is temporarily silent.
+            self.grasp_verify_steps += 1
             if self.real_object_pos is not None:
-                self.grasp_verify_steps += 1
                 obj_xy_err = np.linalg.norm(self.real_object_pos[:2] - ee_global[:2])
                 if self.real_object_pos[2] >= 0.08:
                     if not self.grasp_verified:
@@ -541,13 +557,14 @@ class PickPlaceEnv(gym.Env):
                         self.verified_grasps += 1
                         reward += 1000.0
                     reward += max(0.0, 5.0 * (1.0 - obj_xy_err / 0.05))
-                elif self.grasp_verify_steps > 15:
-                    # Object didn't lift — grasp failed, go back to phase 2
-                    self.object_grasped = False
-                    self.grasp_verified = False
-                    self.current_phase = 2
-                    self.prev_distance = None
-                    reward -= 250.0
+            if not self.grasp_verified and self.grasp_verify_steps > 30:
+                # Object didn't lift within the verify window — grasp failed, back to phase 2.
+                # Return immediately so the rest of the phase-3 block (lift tracking,
+                # prev_distance update) does not overwrite phase-2 state.
+                self.object_grasped = False
+                self.current_phase = 2
+                self.prev_distance = None
+                return reward - 250.0, False
             dist_z = abs(ee_global[2] - 0.25)
             if self.prev_distance is not None:
                 delta = self.prev_distance - dist_z
@@ -648,7 +665,9 @@ class PickPlaceEnv(gym.Env):
         self.wrist_2_pub.publish(Float64(data=float(joint_vels[4])))
         self.wrist_3_pub.publish(Float64(data=float(joint_vels[5])))
 
-        gripper_vel = 0.5 if gripper_command > 0 else -0.5
+        # Close faster than we open so grasp attempts can actually reach the
+        # near-closed range before the phase logic times out.
+        gripper_vel = 1.2 if gripper_command > 0 else -0.8
         self.finger_pub.publish(Float64(data=gripper_vel))
         for pub, mult in self.mimic_pubs:
             pub.publish(Float64(data=gripper_vel * mult))
