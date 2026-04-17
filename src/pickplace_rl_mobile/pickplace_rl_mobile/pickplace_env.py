@@ -86,6 +86,7 @@ class PickPlaceEnv(gym.Env):
 
         self.gz_partition = gz_partition  # stored for subprocess calls (e.g. _spawn_object)
         self.curriculum_stage = int(curriculum_stage)
+        self._pending_curriculum_stage = None
         self.observation_mode = observation_mode
 
         # Must be set before rclpy.init() so the node joins the right domain
@@ -160,7 +161,7 @@ class PickPlaceEnv(gym.Env):
         self._joint_state_velocity_map = {}
         self.base_pose = np.zeros(3)  # x, y, theta
         self.episode_steps = 0
-        self.max_episode_steps = 600
+        self.max_episode_steps = 1000
 
         # Targets
         self.object_start_pos = np.array([0.6, 0.0, 0.1325])  # world frame — on top of platform
@@ -256,6 +257,14 @@ class PickPlaceEnv(gym.Env):
             5: 5,  # full placement
         }
         return stage_targets.get(self.curriculum_stage, 5)
+
+    def set_curriculum_stage(self, curriculum_stage: int) -> None:
+        """Queue curriculum changes so they take effect cleanly on the next reset."""
+        next_stage = int(curriculum_stage)
+        if next_stage == self.curriculum_stage:
+            self._pending_curriculum_stage = None
+            return
+        self._pending_curriculum_stage = next_stage
 
     def curriculum_completed(self) -> bool:
         if self.curriculum_stage <= 0:
@@ -386,53 +395,7 @@ class PickPlaceEnv(gym.Env):
         if ee_global[2] < 0.05 and self.current_phase not in [1, 2, 5]:
             reward -= 30.0 * (1.0 - ee_global[2] / 0.05)
 
-        if self.current_phase == 0:
-            target_xy = obj_pos[:2]
-            ee_xy = ee_global[:2]
-            base_xy = self.base_pose[:2]
-            base_theta = self.base_pose[2]
-
-            base_dist_xy = np.linalg.norm(target_xy - base_xy)
-            arm_dist_xy = np.linalg.norm(target_xy - ee_xy)
-
-            angle_to_target = np.arctan2(target_xy[1] - base_xy[1], target_xy[0] - base_xy[0])
-            angle_diff = angle_to_target - base_theta
-            while angle_diff > np.pi:  angle_diff -= 2 * np.pi
-            while angle_diff < -np.pi: angle_diff += 2 * np.pi
-
-            dist_xy = base_dist_xy + arm_dist_xy + abs(angle_diff) * 0.5
-
-            if self.prev_distance is not None:
-                step_reward = (self.prev_distance - dist_xy) * 100.0
-                reward += step_reward
-
-            self.prev_distance = dist_xy
-
-            # Penalize the standing still arm - force it to move toward the goal!
-            arm_speed = np.linalg.norm(self.joint_velocities[:6])
-            if arm_speed < 0.05:
-                reward -= 1.0
-
-            # Keep arm raised and close to body while driving to avoid tipping the base.
-            local_ee = self.get_end_effector_pos()
-            if ee_global[2] < 0.15:
-                reward -= 2.0  # too low during approach
-            elif ee_global[2] > 0.20:
-                reward += 0.5
-            # Penalize arm extending far forward while still driving (base_dist > 0.30)
-            if base_dist_xy > 0.30 and local_ee[0] > 0.25:
-                reward -= 3.0 * (local_ee[0] - 0.25)  # progressively stiffer
-
-            # Phase 0 -> Phase 1 Transition:
-            # Bin left-wall outer face is at x=0.405 (object_x - 0.195).
-            # Robot should stop 2-5 cm from that wall → base ~0.22-0.25m from object.
-            # arm_dist_xy < 0.08 ensures EE is already close toward target.
-            if arm_dist_xy < 0.08 and base_dist_xy < 0.25 and abs(angle_diff) < 0.5 and ee_global[2] > 0.15:
-                self.current_phase = 1
-                self.prev_distance = None
-                reward += 100.0
-
-        elif self.current_phase == 1:
+        if self.current_phase == 1:
             # Phase 1: Lower arm to grasp height AND approach object XY
             grasp_z = obj_pos[2] if obj_pos[2] > 0.02 else 0.055
             dist_z = abs(ee_global[2] - grasp_z)
@@ -462,7 +425,7 @@ class PickPlaceEnv(gym.Env):
                 reward -= 2.0
 
             # Transition when EE is at right height and very close in XY
-            if dist_z < 0.04 and dist_xy < 0.06:
+            if dist_z < 0.06 and dist_xy < 0.09:
                 self.current_phase = 2
                 self.prev_distance = None
                 reward += 100.0
@@ -695,7 +658,7 @@ class PickPlaceEnv(gym.Env):
         info = {
             'phase': int(self.current_phase),
             'max_phase': int(self.max_phase_reached),
-            'grasp_candidate': bool(self.object_grasped),
+            'object_grasped': bool(self.object_grasped),
             'grasp_verified': bool(self.grasp_verified),
             'grasp_attempts': int(self.grasp_attempts),
             'verified_grasps': int(self.verified_grasps),
@@ -790,6 +753,10 @@ class PickPlaceEnv(gym.Env):
 
     def reset(self, seed=None, **kwargs):
         super().reset(seed=seed)
+
+        if self._pending_curriculum_stage is not None:
+            self.curriculum_stage = self._pending_curriculum_stage
+            self._pending_curriculum_stage = None
 
         self.episode_steps = 0
         self.object_grasped = False

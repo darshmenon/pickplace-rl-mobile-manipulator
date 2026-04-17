@@ -20,7 +20,7 @@ training:
   
 # Environment Settings
 environment:
-  max_episode_steps: 500
+  max_episode_steps: 1000
   object_start_pos: [0.6, 0.0, 0.055]
   target_pos: [0.6, 0.5, 0.1]
   

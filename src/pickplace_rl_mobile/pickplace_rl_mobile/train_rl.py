@@ -41,6 +41,50 @@ class SaveBestVecNormalizeCallback(BaseCallback):
         return True
 
 
+class CurriculumCallback(BaseCallback):
+    """Advance staged curricula automatically after strong evaluation results."""
+
+    DEFAULT_THRESHOLDS = {
+        1: 50.0,
+        2: 250.0,
+        3: 600.0,
+        4: 900.0,
+    }
+
+    def __init__(self, eval_callback: EvalCallback, eval_env, starting_stage: int):
+        super().__init__()
+        self.eval_callback = eval_callback
+        self.eval_env = eval_env
+        self.current_stage = int(starting_stage)
+        self._last_eval_step = 0
+
+    def _advance_stage(self, next_stage: int, mean_reward: float) -> None:
+        self.training_env.env_method('set_curriculum_stage', next_stage)
+        self.eval_env.env_method('set_curriculum_stage', next_stage)
+        self.current_stage = next_stage
+        print(
+            f"Auto-advancing curriculum to stage {next_stage} "
+            f"after eval mean reward {mean_reward:.2f}"
+        )
+
+    def _on_step(self) -> bool:
+        if self.current_stage <= 0 or self.current_stage >= 5:
+            return True
+        if self.eval_callback.n_calls == self._last_eval_step:
+            return True
+        if self.eval_callback.n_calls % self.eval_callback.eval_freq != 0:
+            return True
+
+        self._last_eval_step = self.eval_callback.n_calls
+        mean_reward = self.eval_callback.last_mean_reward
+        threshold = self.DEFAULT_THRESHOLDS.get(self.current_stage)
+        if threshold is None or mean_reward < threshold:
+            return True
+
+        self._advance_stage(self.current_stage + 1, mean_reward)
+        return True
+
+
 def _infer_observation_mode(load_model: str | None) -> str:
     if not load_model:
         return 'full'
@@ -103,6 +147,7 @@ def make_env(monitor_path=None, ros_domain_id=None, gz_partition=None, curriculu
         kw = (
             'phase',
             'max_phase',
+            'object_grasped',
             'grasp_attempts',
             'verified_grasps',
             'grasp_verified',
@@ -208,6 +253,11 @@ def train(total_timesteps=500000, save_dir='./models', n_envs=1, load_model=None
         deterministic=True,
         callback_on_new_best=SaveBestVecNormalizeCallback(best_model_dir),
     )
+    curriculum_callback = CurriculumCallback(
+        eval_callback=eval_callback,
+        eval_env=eval_env,
+        starting_stage=curriculum_stage,
+    )
 
     # 3-layer 512-unit network: bigger than default [256,256] to capture
     # the complex mapping from 24-dim obs to 9-dim continuous actions.
@@ -284,7 +334,7 @@ def train(total_timesteps=500000, save_dir='./models', n_envs=1, load_model=None
     print(f"Starting TQC training for {total_timesteps} timesteps across {n_envs} env(s)...")
     model.learn(
         total_timesteps=total_timesteps,
-        callback=[checkpoint_callback, vecnorm_callback, eval_callback],
+        callback=[checkpoint_callback, vecnorm_callback, eval_callback, curriculum_callback],
         progress_bar=True,
         reset_num_timesteps=not bool(load_model),
     )
