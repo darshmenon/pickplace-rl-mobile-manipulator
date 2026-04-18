@@ -1,1 +1,0 @@
-/home/asimov/pickplace-rl-mobile/src/pickplace_rl_mobile/launch/gazebo_launch.py

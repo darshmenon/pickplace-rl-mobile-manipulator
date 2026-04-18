@@ -1,1 +1,0 @@
-pickplace_rl_mobile
