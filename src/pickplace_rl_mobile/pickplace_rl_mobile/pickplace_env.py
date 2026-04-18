@@ -355,7 +355,6 @@ class PickPlaceEnv(gym.Env):
 
         # Base tipping penalty: if robot falls over, base height deviates significantly
         # Normal base z is ~0.08 (spawn height). If it tilts, z changes dramatically.
-        base_z_deviation = abs(ee_global[2])  # check if EE goes underground
         # Use odom-based check: if base is no longer upright
         if len(self.joint_positions) > 0:
             # If the arm joints show extreme values, the robot likely tipped
@@ -461,11 +460,11 @@ class PickPlaceEnv(gym.Env):
 
             # Reward true side-grasp alignment explicitly so the policy doesn't
             # learn to close while hovering high or offset.
-            if xy_dist < 0.03:
-                reward += 10.0 * (1.0 - xy_dist / 0.03)
-            if z_dist < 0.025:
-                reward += 8.0 * (1.0 - z_dist / 0.025)
-            if xy_dist < 0.025 and z_dist < 0.02:
+            if xy_dist < 0.05:
+                reward += 10.0 * (1.0 - xy_dist / 0.05)
+            if z_dist < 0.04:
+                reward += 8.0 * (1.0 - z_dist / 0.04)
+            if xy_dist < 0.04 and z_dist < 0.03:
                 reward += 12.0
 
             # Reward gripper closing when already near object (actively encourage grasping)
@@ -483,7 +482,7 @@ class PickPlaceEnv(gym.Env):
 
             # A close, closed gripper starts a lift attempt. The large grasp
             # reward is withheld until the real Gazebo object actually rises.
-            if gripper_pos > 0.7 and xy_dist < 0.03 and z_dist < 0.025:
+            if gripper_pos > 0.7 and xy_dist < 0.05 and z_dist < 0.04:
                 self.object_grasped = True
                 self.grasp_verified = False
                 self.current_phase = 3
