@@ -134,7 +134,14 @@ def _schedule_replay_prefill(model, pre_fill: int = 20000) -> None:
     print(f"Pre-filling fresh replay buffer with {pre_fill} steps before updates")
 
 
-def make_env(monitor_path=None, ros_domain_id=None, gz_partition=None, curriculum_stage=0, observation_mode='full'):
+def make_env(
+    monitor_path=None,
+    ros_domain_id=None,
+    gz_partition=None,
+    curriculum_stage=0,
+    observation_mode='full',
+    enable_domain_randomization=True,
+):
     """Factory that returns a thunk creating a monitored PickPlaceEnv."""
     def _init():
         env = PickPlaceEnv(
@@ -142,6 +149,7 @@ def make_env(monitor_path=None, ros_domain_id=None, gz_partition=None, curriculu
             gz_partition=gz_partition,
             curriculum_stage=curriculum_stage,
             observation_mode=observation_mode,
+            enable_domain_randomization=enable_domain_randomization,
         )
         # Log additional info metrics in monitor.csv
         kw = (
@@ -166,6 +174,9 @@ def make_env(monitor_path=None, ros_domain_id=None, gz_partition=None, curriculu
 
 # Base ROS domain ID for parallel worlds (20-29 avoids conflict with default 0)
 _MULTI_WORLD_BASE_DOMAIN = 20
+_SINGLE_WORLD_TRAIN_PARTITION = 'sim_0'
+_SINGLE_WORLD_EVAL_PARTITION = 'sim_1'
+_DEFAULT_N_EVAL_EPISODES = 10
 
 
 def train(total_timesteps=500000, save_dir='./models', n_envs=1, load_model=None, curriculum_stage=0):
@@ -202,15 +213,19 @@ def train(total_timesteps=500000, save_dir='./models', n_envs=1, load_model=None
                      ros_domain_id=_MULTI_WORLD_BASE_DOMAIN + i,
                      gz_partition=f'sim_{i}',
                      curriculum_stage=curriculum_stage,
-                     observation_mode=observation_mode)
+                     observation_mode=observation_mode,
+                     enable_domain_randomization=True)
             for i in range(n_envs)
         ])
     else:
         raw_env = DummyVecEnv([
             make_env(
                 monitor_path=os.path.join(monitor_dir, 'train_env_0.monitor.csv'),
+                ros_domain_id=_MULTI_WORLD_BASE_DOMAIN,
+                gz_partition=_SINGLE_WORLD_TRAIN_PARTITION,
                 curriculum_stage=curriculum_stage,
                 observation_mode=observation_mode,
+                enable_domain_randomization=True,
             )
         ])
 
@@ -222,13 +237,28 @@ def train(total_timesteps=500000, save_dir='./models', n_envs=1, load_model=None
     else:
         env = VecNormalize(raw_env, norm_obs=True, norm_reward=True, clip_obs=10.0)
 
-    eval_raw_env = DummyVecEnv([
-        make_env(
-            monitor_path=os.path.join(eval_monitor_dir, 'eval_env_0.monitor.csv'),
-            curriculum_stage=curriculum_stage,
-            observation_mode=observation_mode,
-        )
-    ])
+    if n_envs > 1:
+        eval_raw_env = DummyVecEnv([
+            make_env(
+                monitor_path=os.path.join(eval_monitor_dir, 'eval_env_0.monitor.csv'),
+                curriculum_stage=curriculum_stage,
+                observation_mode=observation_mode,
+                enable_domain_randomization=False,
+            )
+        ])
+    else:
+        # Single-env training runs the rollout env in-process, so evaluation must live in
+        # its own subprocess to avoid reusing the same rclpy context / Gazebo world.
+        eval_raw_env = SubprocVecEnv([
+            make_env(
+                monitor_path=os.path.join(eval_monitor_dir, 'eval_env_0.monitor.csv'),
+                ros_domain_id=_MULTI_WORLD_BASE_DOMAIN + 1,
+                gz_partition=_SINGLE_WORLD_EVAL_PARTITION,
+                curriculum_stage=curriculum_stage,
+                observation_mode=observation_mode,
+                enable_domain_randomization=False,
+            )
+        ])
     if load_model and resume_vecnorm_path:
         eval_env = _load_vecnormalize_or_fallback(resume_vecnorm_path, eval_raw_env, norm_reward=False)
     else:
@@ -249,7 +279,7 @@ def train(total_timesteps=500000, save_dir='./models', n_envs=1, load_model=None
         best_model_save_path=best_model_dir,
         log_path=save_dir,
         eval_freq=eval_freq,
-        n_eval_episodes=5,
+        n_eval_episodes=_DEFAULT_N_EVAL_EPISODES,
         deterministic=True,
         callback_on_new_best=SaveBestVecNormalizeCallback(best_model_dir),
     )
@@ -327,7 +357,7 @@ def train(total_timesteps=500000, save_dir='./models', n_envs=1, load_model=None
             ent_coef=0.3,           # fixed — auto-tuning blows up for this env
             policy_kwargs=policy_kwargs,
             verbose=1,
-            device='cuda',
+            device='auto',
             tensorboard_log=os.path.join(save_dir, 'tensorboard')
         )
 

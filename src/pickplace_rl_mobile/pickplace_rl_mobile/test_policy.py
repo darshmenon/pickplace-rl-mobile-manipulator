@@ -10,6 +10,7 @@ from rclpy.node import Node
 from sensor_msgs.msg import Image
 from cv_bridge import CvBridge
 from sb3_contrib import TQC
+from stable_baselines3.common.save_util import load_from_zip_file
 from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
 from pickplace_rl_mobile.pickplace_env import PickPlaceEnv
 import threading
@@ -46,6 +47,21 @@ class ImageRecorder(Node):
                 return True
         return False
 
+
+def _infer_observation_mode(model_path: str) -> str:
+    data, _, _ = load_from_zip_file(model_path, device='auto')
+    obs_shape = tuple(data['observation_space'].shape)
+    if obs_shape == (27,):
+        return 'legacy27'
+    return 'full'
+
+
+def _extract_object_position(obs: np.ndarray) -> np.ndarray:
+    # object position is stable at 16:19 in both the full and legacy27 layouts
+    if obs.shape[0] < 19:
+        raise ValueError(f"Observation too short to extract object position: shape={obs.shape}")
+    return np.asarray(obs[16:19], dtype=np.float32)
+
 def test_policy(model_path, num_episodes=5, curriculum_stage=0):
     """
     Test a trained policy and record images.
@@ -72,13 +88,22 @@ def test_policy(model_path, num_episodes=5, curriculum_stage=0):
     vecnorm_path = next((p for p in vecnorm_candidates if os.path.exists(p)), None)
 
     try:
-        env = DummyVecEnv([lambda: PickPlaceEnv(curriculum_stage=curriculum_stage)])
-        if vecnorm_path:
-            print(f"Loading VecNormalize stats from {vecnorm_path}...")
-            env = VecNormalize.load(vecnorm_path, env)
-        else:
-            print("VecNormalize stats not found; using raw observations for testing.")
-            env = VecNormalize(env, norm_obs=True, norm_reward=False, clip_obs=10.0)
+        observation_mode = _infer_observation_mode(model_path)
+        env = DummyVecEnv([
+            lambda: PickPlaceEnv(
+                curriculum_stage=curriculum_stage,
+                observation_mode=observation_mode,
+                enable_domain_randomization=False,
+            )
+        ])
+        if not vecnorm_path:
+            raise FileNotFoundError(
+                f"VecNormalize stats not found next to {model_path}. "
+                "Testing without the saved normalization stats would produce invalid observations."
+            )
+
+        print(f"Loading VecNormalize stats from {vecnorm_path}...")
+        env = VecNormalize.load(vecnorm_path, env)
         env.training = False
         env.norm_reward = False
 
@@ -136,8 +161,8 @@ def test_policy(model_path, num_episodes=5, curriculum_stage=0):
             final_obs = env.unnormalize_obs(np.asarray([terminal_obs]))[0]
         else:
             final_obs = terminal_obs
-        obj_pos = final_obs[16:19]
-        target_pos = np.array([0.6, 0.5, 0.1])
+        obj_pos = _extract_object_position(np.asarray(final_obs))
+        target_pos = np.asarray(env.venv.envs[0].target_pos if isinstance(env, VecNormalize) else env.envs[0].target_pos)
         distance_to_target = np.linalg.norm(obj_pos - target_pos)
         
         if bool(info.get('is_success', False)) or distance_to_target < 0.15:

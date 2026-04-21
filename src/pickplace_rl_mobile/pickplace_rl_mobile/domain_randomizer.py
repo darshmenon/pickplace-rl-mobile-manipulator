@@ -156,15 +156,22 @@ class DomainRandomizer:
         noisy_obs = obs.copy()
         cfg = self.config
 
-        # Joint position noise (indices 0-4)
-        noisy_obs[:5] += self.rng.normal(0, cfg.joint_pos_noise_std, 5)
+        # Joint position block is stable across both full (46) and legacy27 layouts.
+        noisy_obs[:6] += self.rng.normal(0, cfg.joint_pos_noise_std, 6)
 
-        # EE position noise (indices 5-7) — derived from joint noise, add small extra
-        noisy_obs[5:8] += self.rng.normal(0, cfg.odom_pos_noise_std, 3)
+        # EE position is always at indices 13:16 in the current observation layouts.
+        noisy_obs[13:16] += self.rng.normal(0, cfg.odom_pos_noise_std, 3)
 
-        # Base pose noise (indices 13-15)
-        noisy_obs[13:15] += self.rng.normal(0, cfg.odom_pos_noise_std, 2)
-        noisy_obs[15] += self.rng.normal(0, cfg.odom_theta_noise_std)
+        # Base pose lives at 24:27 in legacy27 and 34:37 in full mode.
+        if noisy_obs.shape[0] >= 37:
+            base_slice = slice(34, 37)
+        elif noisy_obs.shape[0] >= 27:
+            base_slice = slice(24, 27)
+        else:
+            return noisy_obs
+
+        noisy_obs[base_slice.start:base_slice.start + 2] += self.rng.normal(0, cfg.odom_pos_noise_std, 2)
+        noisy_obs[base_slice.stop - 1] += self.rng.normal(0, cfg.odom_theta_noise_std)
 
         return noisy_obs
 

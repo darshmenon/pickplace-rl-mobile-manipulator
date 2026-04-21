@@ -13,6 +13,7 @@ from nav_msgs.msg import Odometry
 from std_msgs.msg import Float64
 from tf2_msgs.msg import TFMessage
 import time
+from pickplace_rl_mobile.domain_randomizer import DomainRandomizer, RandomizationConfig
 
 # UR3 DH parameters: (a_m, d_m, alpha_rad) per joint
 # Source: ur_description/config/ur3/default_kinematics.yaml
@@ -81,6 +82,7 @@ class PickPlaceEnv(gym.Env):
         gz_partition=None,
         curriculum_stage=0,
         observation_mode='full',
+        enable_domain_randomization=True,
     ):
         super().__init__()
 
@@ -88,6 +90,7 @@ class PickPlaceEnv(gym.Env):
         self.curriculum_stage = int(curriculum_stage)
         self._pending_curriculum_stage = None
         self.observation_mode = observation_mode
+        self.enable_domain_randomization = bool(enable_domain_randomization)
 
         # Must be set before rclpy.init() so the node joins the right domain
         if ros_domain_id is not None:
@@ -161,7 +164,7 @@ class PickPlaceEnv(gym.Env):
         self._joint_state_velocity_map = {}
         self.base_pose = np.zeros(3)  # x, y, theta
         self.episode_steps = 0
-        self.max_episode_steps = 1000
+        self.max_episode_steps = self.episode_step_limit()
 
         # Targets
         self.object_start_pos = np.array([0.6, 0.0, 0.1325])  # world frame — on top of platform
@@ -181,6 +184,17 @@ class PickPlaceEnv(gym.Env):
         self.current_phase = 0
         self.prev_distance = None
         self.prev_action = np.zeros(self.action_space.shape[0], dtype=np.float32)
+        self.randomizer = None
+        if self.enable_domain_randomization:
+            self.randomizer = DomainRandomizer(RandomizationConfig(
+                obj_x_range=(0.57, 0.63),
+                obj_y_range=(-0.03, 0.03),
+                obj_z_base=0.1325,
+                target_z=float(self.target_pos[2]),
+                randomize_target_pos=False,
+                randomize_observations=True,
+                randomize_actions=False,
+            ))
 
     def joint_state_callback(self, msg):
         n = len(msg.position)
@@ -258,6 +272,18 @@ class PickPlaceEnv(gym.Env):
         }
         return stage_targets.get(self.curriculum_stage, 5)
 
+    def episode_step_limit(self) -> int:
+        """Shorter early-stage episodes improve reset rate and sample efficiency."""
+        limits = {
+            0: 1000,  # full task
+            1: 250,   # reach/alignment only
+            2: 350,   # grasp attempts
+            3: 450,   # verified grasp + lift
+            4: 700,   # transport almost-full task
+            5: 1000,
+        }
+        return limits.get(self.curriculum_stage, 1000)
+
     def set_curriculum_stage(self, curriculum_stage: int) -> None:
         """Queue curriculum changes so they take effect cleanly on the next reset."""
         next_stage = int(curriculum_stage)
@@ -287,7 +313,8 @@ class PickPlaceEnv(gym.Env):
         ee_to_target = self.target_pos - ee_pos
         obj_to_target = self.target_pos - obj_pos
         obj_in_base = self.world_point_to_base(obj_pos)
-        gripper_error = abs(self.joint_positions[6] - (0.8 if self.current_phase >= 2 else 0.0))
+        desired_gripper_pos = 0.8 if self.current_phase in [2, 3, 4] else 0.0
+        gripper_error = abs(self.joint_positions[6] - desired_gripper_pos)
         full_obs = np.concatenate([
             self.joint_positions[:6],    # arm joint positions
             self.joint_velocities[:6],   # arm joint velocities
@@ -305,13 +332,16 @@ class PickPlaceEnv(gym.Env):
             self.prev_action,
         ])
         if self.observation_mode == 'legacy27':
-            legacy_obs = np.concatenate([
+            obs = np.concatenate([
                 full_obs[:22],   # joints, EE/object positions, ee_to_obj
                 full_obs[32:34], # grasped, phase
                 full_obs[34:37], # base pose
-            ])
-            return legacy_obs.astype(np.float32)
-        return full_obs.astype(np.float32)
+            ]).astype(np.float32)
+        else:
+            obs = full_obs.astype(np.float32)
+        if self.randomizer is not None:
+            obs = self.randomizer.add_observation_noise(obs)
+        return obs
 
     def get_joint_position(self, joint_name: str, default=np.nan) -> float:
         return float(self._joint_state_position_map.get(joint_name, default))
@@ -644,7 +674,9 @@ class PickPlaceEnv(gym.Env):
             self.object_pos = ee_global.copy()
             self.object_pos[2] -= 0.05
 
-        time.sleep(0.002)
+        # Let ROS process any immediately pending state updates without adding a fixed
+        # per-step sleep cost to long training runs.
+        rclpy.spin_once(self.node, timeout_sec=0.0)
         self.prev_action = action.copy()
 
         obs = self.get_observation()
@@ -733,7 +765,7 @@ class PickPlaceEnv(gym.Env):
             self.shoulder_pitch_pub.publish(Float64(data=float(s_vel)))
             self.elbow_pub.publish(Float64(data=float(e_vel)))
             self.wrist_1_pub.publish(Float64(data=float(w1_vel)))
-            time.sleep(0.005)
+            rclpy.spin_once(self.node, timeout_sec=0.005)
 
         self.cmd_vel_pub.publish(Twist())
 
@@ -760,7 +792,9 @@ class PickPlaceEnv(gym.Env):
         self.episode_steps = 0
         self.object_grasped = False
         self.grasp_verified = False
+        self.base_pose = np.zeros(3, dtype=np.float32)
         self.current_phase = 1  # start directly at lowering phase (base already positioned)
+        self.max_episode_steps = self.episode_step_limit()
         self.prev_distance = None
         self.grasp_verify_steps = 0
         self.grasp_attempts = 0
@@ -771,14 +805,23 @@ class PickPlaceEnv(gym.Env):
         self.stage_success = False
         self.prev_action = np.zeros(self.action_space.shape[0], dtype=np.float32)
 
-        # Randomize object XY ±3cm so the policy generalises, not memorises one spot
-        rng = np.random.default_rng(seed)
-        ox = 0.6 + rng.uniform(-0.03, 0.03)
-        oy = 0.0 + rng.uniform(-0.03, 0.03)
-        oz = 0.1325  # on top of platform (platform top=0.10m + cube half=0.0325m)
-        self.object_start_pos = np.array([ox, oy, oz])
+        if self.randomizer is not None:
+            if seed is not None:
+                self.randomizer.seed(seed)
+            self.randomizer.reset_episode()
+            self.object_start_pos = self.randomizer.randomize_object_position().astype(np.float32)
+            self.target_pos = self.randomizer.randomize_target_position().astype(np.float32)
+        else:
+            # Randomize object XY ±3cm so the policy generalises, not memorises one spot
+            rng = np.random.default_rng(seed)
+            ox = 0.6 + rng.uniform(-0.03, 0.03)
+            oy = 0.0 + rng.uniform(-0.03, 0.03)
+            oz = 0.1325  # on top of platform (platform top=0.10m + cube half=0.0325m)
+            self.object_start_pos = np.array([ox, oy, oz], dtype=np.float32)
+            self.target_pos = np.array([0.6, 0.5, 0.15], dtype=np.float32)
         self.object_pos = self.object_start_pos.copy()
         self.real_object_pos = None
+        ox, oy, oz = self.object_start_pos
         self._spawn_object(ox, oy, oz)
 
         self.cmd_vel_pub.publish(Twist())

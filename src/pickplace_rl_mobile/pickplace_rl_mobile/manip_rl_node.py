@@ -343,7 +343,8 @@ class ManipRLNode(Node):
         ee_to_target = self.target_pos - ee_pos
         obj_to_target = self.target_pos - obj_pos
         obj_in_base = self.world_point_to_base(obj_pos)
-        gripper_error = abs(self.joint_positions[6] - (0.8 if self.current_phase >= 2 else 0.0))
+        desired_gripper_pos = 0.8 if self.current_phase in [2, 3, 4] else 0.0
+        gripper_error = abs(self.joint_positions[6] - desired_gripper_pos)
         full_obs = np.concatenate([
             self.joint_positions[:6],
             self.joint_velocities[:6],
