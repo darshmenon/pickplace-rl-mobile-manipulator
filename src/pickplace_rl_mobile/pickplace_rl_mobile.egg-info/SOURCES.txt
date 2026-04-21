@@ -2,7 +2,7 @@ package.xml
 setup.cfg
 setup.py
 config/nav2_params.yaml
-config/training_config.yaml
+config/robot_view.rviz
 launch/display_launch.py
 launch/full_system.launch.py
 launch/gazebo.launch.py

@@ -481,39 +481,39 @@
     <plugin filename="gz-sim-joint-controller-system" name="gz::sim::systems::JointController">
       <joint_name>shoulder_joint</joint_name>
       <initial_velocity>0.0</initial_velocity>
-      <topic>shoulder_joint/cmd_vel</topic>
+      <topic>/shoulder_pan_joint/cmd_vel</topic>
     </plugin>
     <plugin filename="gz-sim-joint-controller-system" name="gz::sim::systems::JointController">
       <joint_name>shoulder_pitch_joint</joint_name>
       <initial_velocity>0.0</initial_velocity>
-      <topic>shoulder_pitch_joint/cmd_vel</topic>
+      <topic>/shoulder_lift_joint/cmd_vel</topic>
     </plugin>
     <plugin filename="gz-sim-joint-controller-system" name="gz::sim::systems::JointController">
       <joint_name>elbow_joint</joint_name>
       <initial_velocity>0.0</initial_velocity>
-      <topic>elbow_joint/cmd_vel</topic>
+      <topic>/elbow_joint/cmd_vel</topic>
     </plugin>
     <plugin filename="gz-sim-joint-controller-system" name="gz::sim::systems::JointController">
       <joint_name>wrist_roll_joint</joint_name>
       <initial_velocity>0.0</initial_velocity>
-      <topic>wrist_roll_joint/cmd_vel</topic>
+      <topic>/wrist_1_joint/cmd_vel</topic>
     </plugin>
     <plugin filename="gz-sim-joint-controller-system" name="gz::sim::systems::JointController">
       <joint_name>wrist_pitch_joint</joint_name>
       <initial_velocity>0.0</initial_velocity>
-      <topic>wrist_pitch_joint/cmd_vel</topic>
+      <topic>/wrist_2_joint/cmd_vel</topic>
     </plugin>
     
     <!-- Gripper Controllers -->
     <plugin filename="gz-sim-joint-controller-system" name="gz::sim::systems::JointController">
       <joint_name>left_finger_joint</joint_name>
       <initial_velocity>0.0</initial_velocity>
-      <topic>left_finger_joint/cmd_vel</topic>
+      <topic>/finger_joint/cmd_vel</topic>
     </plugin>
     <plugin filename="gz-sim-joint-controller-system" name="gz::sim::systems::JointController">
       <joint_name>right_finger_joint</joint_name>
       <initial_velocity>0.0</initial_velocity>
-      <topic>right_finger_joint/cmd_vel</topic>
+      <topic>/finger_joint/cmd_vel</topic>
     </plugin>
   </gazebo>
 
