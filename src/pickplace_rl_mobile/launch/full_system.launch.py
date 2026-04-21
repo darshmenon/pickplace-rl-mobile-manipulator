@@ -43,7 +43,7 @@ def generate_launch_description():
         'use_rl', default_value='false',
         description='Whether to launch the RL manipulation node')
     model_path_arg = DeclareLaunchArgument(
-        'model_path', default_value='./rl_models/pickplace_final_model.zip',
+        'model_path', default_value='./rl_models/best_model/best_model.zip',
         description='Path to the trained RL model')
 
     # Gazebo
@@ -104,13 +104,18 @@ def generate_launch_description():
             # LiDAR
             '/scan@sensor_msgs/msg/LaserScan@gz.msgs.LaserScan',
             # Joint command bridges
-            '/shoulder_joint/cmd_vel@std_msgs/msg/Float64@gz.msgs.Double',
-            '/shoulder_pitch_joint/cmd_vel@std_msgs/msg/Float64@gz.msgs.Double',
+            '/shoulder_pan_joint/cmd_vel@std_msgs/msg/Float64@gz.msgs.Double',
+            '/shoulder_lift_joint/cmd_vel@std_msgs/msg/Float64@gz.msgs.Double',
             '/elbow_joint/cmd_vel@std_msgs/msg/Float64@gz.msgs.Double',
-            '/wrist_roll_joint/cmd_vel@std_msgs/msg/Float64@gz.msgs.Double',
-            '/wrist_pitch_joint/cmd_vel@std_msgs/msg/Float64@gz.msgs.Double',
-            '/left_finger_joint/cmd_vel@std_msgs/msg/Float64@gz.msgs.Double',
-            '/right_finger_joint/cmd_vel@std_msgs/msg/Float64@gz.msgs.Double'
+            '/wrist_1_joint/cmd_vel@std_msgs/msg/Float64@gz.msgs.Double',
+            '/wrist_2_joint/cmd_vel@std_msgs/msg/Float64@gz.msgs.Double',
+            '/wrist_3_joint/cmd_vel@std_msgs/msg/Float64@gz.msgs.Double',
+            '/finger_joint/cmd_vel@std_msgs/msg/Float64@gz.msgs.Double',
+            '/left_inner_knuckle_joint/cmd_vel@std_msgs/msg/Float64@gz.msgs.Double',
+            '/left_inner_finger_joint/cmd_vel@std_msgs/msg/Float64@gz.msgs.Double',
+            '/right_outer_knuckle_joint/cmd_vel@std_msgs/msg/Float64@gz.msgs.Double',
+            '/right_inner_knuckle_joint/cmd_vel@std_msgs/msg/Float64@gz.msgs.Double',
+            '/right_inner_finger_joint/cmd_vel@std_msgs/msg/Float64@gz.msgs.Double'
         ],
         output='screen'
     )

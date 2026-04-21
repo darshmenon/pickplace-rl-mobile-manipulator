@@ -2,7 +2,7 @@
 """
 Manipulation RL Node for the Pick-and-Place Mobile Manipulator.
 
-Wraps the trained SAC policy as a proper ROS2 node that:
+Wraps the trained RL policy as a proper ROS2 node that:
 - Subscribes to perception (detected object pose) instead of using hard-coded positions
 - Subscribes to joint states and odometry
 - Runs RL inference at 20Hz
@@ -10,6 +10,7 @@ Wraps the trained SAC policy as a proper ROS2 node that:
 """
 
 import numpy as np
+import gymnasium as gym
 import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import JointState
@@ -18,6 +19,83 @@ from nav_msgs.msg import Odometry
 from std_msgs.msg import Float64, String
 import json
 import os
+from stable_baselines3.common.save_util import load_from_zip_file
+from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
+
+
+_UR3_DH = [
+    (0.0,      0.1519,  np.pi / 2),
+    (-0.24365, 0.0,     0.0),
+    (-0.21325, 0.0,     0.0),
+    (0.0,      0.11235, np.pi / 2),
+    (0.0,      0.08535, -np.pi / 2),
+    (0.0,      0.0819,  0.0),
+]
+_ARM_MOUNT_XYZ = np.array([0.0, 0.0, 0.1], dtype=np.float32)
+_BASE_SPAWN_Z = 0.08
+_ARM_JOINT_NAMES = [
+    'shoulder_pan_joint',
+    'shoulder_lift_joint',
+    'elbow_joint',
+    'wrist_1_joint',
+    'wrist_2_joint',
+    'wrist_3_joint',
+]
+_MIMIC_MULTIPLIERS = {
+    'left_inner_knuckle_joint': 1.0,
+    'left_inner_finger_joint': -1.0,
+    'right_outer_knuckle_joint': -1.0,
+    'right_inner_knuckle_joint': 1.0,
+    'right_inner_finger_joint': -1.0,
+}
+
+
+def _dh_transform(theta: float, d: float, a: float, alpha: float) -> np.ndarray:
+    ct, st = np.cos(theta), np.sin(theta)
+    ca, sa = np.cos(alpha), np.sin(alpha)
+    return np.array([
+        [ct, -st * ca,  st * sa, a * ct],
+        [st,  ct * ca, -ct * sa, a * st],
+        [0.0,      sa,      ca,      d],
+        [0.0,     0.0,     0.0,    1.0],
+    ], dtype=np.float32)
+
+
+def _ur3_fk(joint_angles: np.ndarray) -> np.ndarray:
+    """Return EE position in the arm base frame using UR3 DH parameters."""
+    transform = np.eye(4, dtype=np.float32)
+    for theta, (a, d, alpha) in zip(joint_angles[:6], _UR3_DH):
+        transform = transform @ _dh_transform(float(theta), float(d), float(a), float(alpha))
+    return transform[:3, 3]
+
+
+class _InferenceSpaceEnv(gym.Env):
+    """Minimal env used only to load VecNormalize stats for inference."""
+
+    metadata = {}
+
+    def __init__(self, obs_dim: int, action_dim: int):
+        super().__init__()
+        self.observation_space = gym.spaces.Box(
+            low=-np.inf,
+            high=np.inf,
+            shape=(obs_dim,),
+            dtype=np.float32,
+        )
+        self.action_space = gym.spaces.Box(
+            low=-1.0,
+            high=1.0,
+            shape=(action_dim,),
+            dtype=np.float32,
+        )
+
+    def reset(self, *, seed=None, options=None):
+        super().reset(seed=seed)
+        return np.zeros(self.observation_space.shape, dtype=np.float32), {}
+
+    def step(self, action):
+        obs = np.zeros(self.observation_space.shape, dtype=np.float32)
+        return obs, 0.0, True, False, {}
 
 
 class ManipRLNode(Node):
@@ -25,57 +103,60 @@ class ManipRLNode(Node):
         super().__init__('manip_rl_node')
 
         # --- Parameters ---
-        self.declare_parameter('model_path', './rl_models/pickplace_final_model.zip')
+        self.declare_parameter('model_path', './rl_models/best_model/best_model.zip')
         self.declare_parameter('inference_rate', 20.0)
         self.declare_parameter('use_perception', True)
-        self.declare_parameter('fallback_object_pos', [0.6, 0.0, 0.055])
-        self.declare_parameter('target_pos', [0.6, 0.5, 0.1])
+        self.declare_parameter('fallback_object_pos', [0.6, 0.0, 0.1325])
+        self.declare_parameter('target_pos', [0.6, 0.5, 0.15])
         self.declare_parameter('joint_velocity_scale', 0.5)
         self.declare_parameter('base_linear_scale', 0.5)
         self.declare_parameter('base_angular_scale', 1.0)
+        self.declare_parameter('initial_phase', 1)
 
         self.model_path = self.get_parameter('model_path').value
         self.use_perception = self.get_parameter('use_perception').value
         self.fallback_object_pos = np.array(
-            self.get_parameter('fallback_object_pos').value)
+            self.get_parameter('fallback_object_pos').value, dtype=np.float32)
         self.target_pos = np.array(
-            self.get_parameter('target_pos').value)
+            self.get_parameter('target_pos').value, dtype=np.float32)
         self.joint_vel_scale = self.get_parameter('joint_velocity_scale').value
         self.base_lin_scale = self.get_parameter('base_linear_scale').value
         self.base_ang_scale = self.get_parameter('base_angular_scale').value
 
         # State variables
-        self.joint_positions = np.zeros(7)
-        self.base_pose = np.zeros(3)  # x, y, theta
+        self.joint_positions = np.zeros(9, dtype=np.float32)
+        self.joint_velocities = np.zeros(9, dtype=np.float32)
+        self.base_pose = np.zeros(3, dtype=np.float32)
         self.object_pos = self.fallback_object_pos.copy()
         self.object_grasped = False
-        self.current_phase = 0
+        self.current_phase = int(self.get_parameter('initial_phase').value)
         self.model = None
+        self.vecnormalize = None
         self.model_loaded = False
         self.perception_received = False
-
-        # Robot kinematics (same as pickplace_env.py)
-        self.base_height = 0.2
-        self.link1_length = 0.24
-        self.link2_length = 0.24
-        self.link3_length = 0.20
+        self.observation_mode = 'legacy27'
+        self.prev_action = np.zeros(9, dtype=np.float32)
+        self._joint_state_position_map = {}
+        self._joint_state_velocity_map = {}
 
         # --- Publishers ---
         self.cmd_vel_pub = self.create_publisher(Twist, '/cmd_vel', 10)
-        self.shoulder_pub = self.create_publisher(
-            Float64, '/shoulder_joint/cmd_vel', 10)
-        self.shoulder_pitch_pub = self.create_publisher(
-            Float64, '/shoulder_pitch_joint/cmd_vel', 10)
-        self.elbow_pub = self.create_publisher(
-            Float64, '/elbow_joint/cmd_vel', 10)
-        self.wrist_roll_pub = self.create_publisher(
-            Float64, '/wrist_roll_joint/cmd_vel', 10)
-        self.wrist_pitch_pub = self.create_publisher(
-            Float64, '/wrist_pitch_joint/cmd_vel', 10)
-        self.left_finger_pub = self.create_publisher(
-            Float64, '/left_finger_joint/cmd_vel', 10)
-        self.right_finger_pub = self.create_publisher(
-            Float64, '/right_finger_joint/cmd_vel', 10)
+        self.arm_joint_pubs = [
+            self.create_publisher(Float64, '/shoulder_pan_joint/cmd_vel', 10),
+            self.create_publisher(Float64, '/shoulder_lift_joint/cmd_vel', 10),
+            self.create_publisher(Float64, '/elbow_joint/cmd_vel', 10),
+            self.create_publisher(Float64, '/wrist_1_joint/cmd_vel', 10),
+            self.create_publisher(Float64, '/wrist_2_joint/cmd_vel', 10),
+            self.create_publisher(Float64, '/wrist_3_joint/cmd_vel', 10),
+        ]
+        self.finger_pub = self.create_publisher(Float64, '/finger_joint/cmd_vel', 10)
+        self.mimic_pubs = [
+            (
+                self.create_publisher(Float64, f'/{joint_name}/cmd_vel', 10),
+                multiplier,
+            )
+            for joint_name, multiplier in _MIMIC_MULTIPLIERS.items()
+        ]
 
         # --- Subscribers ---
         self.joint_sub = self.create_subscription(
@@ -104,27 +185,104 @@ class ManipRLNode(Node):
         self.get_logger().info(
             f'ManipRL node initialized (perception={self.use_perception})')
 
-    def load_model(self):
-        """Load the trained SAC model."""
+    def _resolve_model_path(self, requested_path: str) -> str | None:
+        candidates = []
+        if requested_path:
+            candidates.append(requested_path)
+        candidates.extend([
+            './rl_models/pickplace_final_model.zip',
+            './rl_models/best_model.zip',
+            './rl_models/best_model/best_model.zip',
+        ])
+        seen = set()
+        for candidate in candidates:
+            if not candidate:
+                continue
+            normalized = os.path.abspath(os.path.expanduser(candidate))
+            if normalized in seen:
+                continue
+            seen.add(normalized)
+            if os.path.exists(normalized):
+                return normalized
+        return None
+
+    def _infer_observation_mode(self, model_path: str) -> str:
         try:
-            from stable_baselines3 import SAC
-            if os.path.exists(self.model_path):
-                self.model = SAC.load(self.model_path)
+            data, _, _ = load_from_zip_file(model_path, device='auto')
+            obs_shape = tuple(data['observation_space'].shape)
+        except Exception as exc:
+            self.get_logger().warn(
+                f'Could not inspect checkpoint observation space ({exc}); defaulting to legacy27'
+            )
+            return 'legacy27'
+        if obs_shape == (46,):
+            return 'full'
+        return 'legacy27'
+
+    def _load_vecnormalize(self, model_path: str) -> None:
+        model_dir = os.path.dirname(model_path)
+        vecnorm_candidates = [
+            os.path.join(model_dir, 'vecnormalize.pkl'),
+            os.path.join(model_dir, 'best_vecnormalize.pkl'),
+            os.path.join(os.path.dirname(model_dir), 'vecnormalize.pkl'),
+        ]
+        vecnorm_path = next((path for path in vecnorm_candidates if os.path.exists(path)), None)
+        if vecnorm_path is None:
+            self.get_logger().warn('VecNormalize stats not found; using raw observations for inference')
+            return
+
+        try:
+            dummy_env = DummyVecEnv([lambda: _InferenceSpaceEnv(self.obs_dim, self.action_dim)])
+            self.vecnormalize = VecNormalize.load(vecnorm_path, dummy_env)
+            self.vecnormalize.training = False
+            self.vecnormalize.norm_reward = False
+            self.get_logger().info(f'Loaded VecNormalize stats from {vecnorm_path}')
+        except Exception as exc:
+            self.vecnormalize = None
+            self.get_logger().warn(f'Could not load VecNormalize stats from {vecnorm_path}: {exc}')
+
+    def load_model(self):
+        """Load the trained RL model and matching normalization stats."""
+        try:
+            from sb3_contrib import TQC
+
+            resolved_model_path = self._resolve_model_path(self.model_path)
+            if resolved_model_path is not None:
+                self.model_path = resolved_model_path
+                self.observation_mode = self._infer_observation_mode(self.model_path)
+                self.model = TQC.load(self.model_path)
+                self.obs_dim = int(self.model.observation_space.shape[0])
+                self.action_dim = int(self.model.action_space.shape[0])
+                self.prev_action = np.zeros(self.action_dim, dtype=np.float32)
+                self._load_vecnormalize(self.model_path)
                 self.model_loaded = True
-                self.get_logger().info(f'Loaded RL model from {self.model_path}')
+                self.get_logger().info(
+                    f'Loaded {type(self.model).__name__} model from {self.model_path} '
+                    f'(obs={self.obs_dim}, action={self.action_dim}, mode={self.observation_mode})'
+                )
             else:
                 self.get_logger().warn(
-                    f'Model not found at {self.model_path} — running in demo mode')
+                    f'Model not found near requested path {self.model_path} — running in demo mode'
+                )
         except ImportError:
             self.get_logger().error(
-                'stable-baselines3 not installed — cannot load model')
+                'sb3-contrib / stable-baselines3 not installed — cannot load model')
         except Exception as e:
             self.get_logger().error(f'Failed to load model: {e}')
 
     def joint_callback(self, msg):
         """Update joint positions."""
-        if len(msg.position) >= 7:
-            self.joint_positions = np.array(msg.position[:7])
+        self._joint_state_position_map = dict(zip(msg.name, msg.position))
+        self._joint_state_velocity_map = dict(zip(msg.name, msg.velocity))
+        for idx, joint_name in enumerate(_ARM_JOINT_NAMES):
+            self.joint_positions[idx] = float(self._joint_state_position_map.get(joint_name, 0.0))
+            self.joint_velocities[idx] = float(self._joint_state_velocity_map.get(joint_name, 0.0))
+        self.joint_positions[6] = float(self._joint_state_position_map.get('finger_joint', 0.0))
+        self.joint_velocities[6] = float(self._joint_state_velocity_map.get('finger_joint', 0.0))
+        self.joint_positions[7] = float(self._joint_state_position_map.get('left_wheel_joint', 0.0))
+        self.joint_positions[8] = float(self._joint_state_position_map.get('right_wheel_joint', 0.0))
+        self.joint_velocities[7] = float(self._joint_state_velocity_map.get('left_wheel_joint', 0.0))
+        self.joint_velocities[8] = float(self._joint_state_velocity_map.get('right_wheel_joint', 0.0))
 
     def odom_callback(self, msg):
         """Update base pose from odometry."""
@@ -153,72 +311,93 @@ class ManipRLNode(Node):
         except (json.JSONDecodeError, KeyError):
             pass
 
-    def get_end_effector_pos(self):
-        """Compute local EE position from joint angles."""
-        shoulder = self.joint_positions[0]
-        shoulder_pitch = self.joint_positions[1]
-        elbow = self.joint_positions[2]
+    def world_point_to_base(self, point_world: np.ndarray) -> np.ndarray:
+        bx, by, btheta = self.base_pose
+        dx = float(point_world[0]) - float(bx)
+        dy = float(point_world[1]) - float(by)
+        c = np.cos(-btheta)
+        s = np.sin(-btheta)
+        return np.array([
+            c * dx - s * dy,
+            s * dx + c * dy,
+            float(point_world[2]) - _BASE_SPAWN_Z,
+        ], dtype=np.float32)
 
-        z = self.base_height + self.link1_length
-        x_local = (self.link2_length * np.cos(shoulder_pitch) +
-                   self.link3_length * np.cos(shoulder_pitch + elbow))
-        z_local = (self.link2_length * np.sin(shoulder_pitch) +
-                   self.link3_length * np.sin(shoulder_pitch + elbow))
+    def get_end_effector_pos(self) -> np.ndarray:
+        """Compute EE position in world frame using the same FK as the env."""
+        ee_in_base = _ur3_fk(self.joint_positions[:6]) + _ARM_MOUNT_XYZ
+        btheta = float(self.base_pose[2])
+        c = np.cos(btheta)
+        s = np.sin(btheta)
+        return np.array([
+            float(self.base_pose[0]) + c * ee_in_base[0] - s * ee_in_base[1],
+            float(self.base_pose[1]) + s * ee_in_base[0] + c * ee_in_base[1],
+            _BASE_SPAWN_Z + ee_in_base[2],
+        ], dtype=np.float32)
 
-        x = 0.1 + x_local * np.cos(shoulder)
-        y = x_local * np.sin(shoulder)
-        z = z + z_local
-
-        return np.array([x, y, z])
-
-    def build_observation(self):
-        """Build observation vector matching PickPlaceEnv format."""
+    def build_observation(self) -> np.ndarray:
+        """Build an observation vector matching the trained policy format."""
         ee_pos = self.get_end_effector_pos()
-        obs = np.concatenate([
-            self.joint_positions[:5],
+        obj_pos = self.object_pos
+        ee_to_obj = obj_pos - ee_pos
+        ee_to_target = self.target_pos - ee_pos
+        obj_to_target = self.target_pos - obj_pos
+        obj_in_base = self.world_point_to_base(obj_pos)
+        gripper_error = abs(self.joint_positions[6] - (0.8 if self.current_phase >= 2 else 0.0))
+        full_obs = np.concatenate([
+            self.joint_positions[:6],
+            self.joint_velocities[:6],
+            [self.joint_positions[6]],
             ee_pos,
-            self.object_pos,
+            obj_pos,
+            ee_to_obj,
+            ee_to_target,
+            obj_to_target,
+            obj_in_base,
+            [gripper_error],
             [float(self.object_grasped)],
             [float(self.current_phase)],
-            self.base_pose
-        ])
-        return obs.astype(np.float32)
+            self.base_pose,
+            self.prev_action,
+        ]).astype(np.float32)
+        if self.observation_mode == 'legacy27':
+            return np.concatenate([
+                full_obs[:22],
+                full_obs[32:34],
+                full_obs[34:37],
+            ]).astype(np.float32)
+        return full_obs
 
     def publish_action(self, action):
         """Publish joint velocities and base twist from action vector."""
-        joint_vels = action[:5] * self.joint_vel_scale
-        gripper_cmd = action[5]
-        base_linear = action[6] * self.base_lin_scale
-        base_angular = action[7] * self.base_ang_scale
+        action = np.asarray(action, dtype=np.float32).reshape(-1)
+        joint_vels = action[:6] * self.joint_vel_scale
+        gripper_cmd = float(action[6])
+        base_linear = float(action[7]) * self.base_lin_scale
+        base_angular = float(action[8]) * self.base_ang_scale
 
-        # Joint velocities
-        self.shoulder_pub.publish(Float64(data=float(joint_vels[0])))
-        self.shoulder_pitch_pub.publish(Float64(data=float(joint_vels[1])))
-        self.elbow_pub.publish(Float64(data=float(joint_vels[2])))
-        self.wrist_roll_pub.publish(Float64(data=float(joint_vels[3])))
-        self.wrist_pitch_pub.publish(Float64(data=float(joint_vels[4])))
+        for pub, joint_vel in zip(self.arm_joint_pubs, joint_vels):
+            pub.publish(Float64(data=float(joint_vel)))
 
-        # Gripper
-        gripper_vel = 0.5 if gripper_cmd > 0 else -0.5
-        self.left_finger_pub.publish(Float64(data=gripper_vel))
-        self.right_finger_pub.publish(Float64(data=gripper_vel))
+        gripper_vel = 0.6 if gripper_cmd > 0 else -0.6
+        self.finger_pub.publish(Float64(data=gripper_vel))
+        for pub, multiplier in self.mimic_pubs:
+            pub.publish(Float64(data=float(gripper_vel * multiplier)))
 
-        # Base motion
         twist = Twist()
-        twist.linear.x = float(base_linear)
-        twist.angular.z = float(base_angular)
+        twist.linear.x = base_linear
+        twist.angular.z = base_angular
         self.cmd_vel_pub.publish(twist)
+        self.prev_action = action.copy()
 
     def inference_step(self):
         """Run one step of RL inference."""
         if not self.safety_ok:
-            # Safety violation — stop everything
-            self.publish_action(np.zeros(8))
+            self.publish_action(np.zeros(9, dtype=np.float32))
             return
 
         if not self.model_loaded:
-            # Demo mode: command zero velocities so the arm returns to rest
-            self.publish_action(np.zeros(8))
+            self.publish_action(np.zeros(9, dtype=np.float32))
             return
 
         if self.use_perception and not self.perception_received:
@@ -228,6 +407,8 @@ class ManipRLNode(Node):
 
         # Build observation and get action from policy
         obs = self.build_observation()
+        if self.vecnormalize is not None:
+            obs = self.vecnormalize.normalize_obs(obs.reshape(1, -1))[0]
         action, _ = self.model.predict(obs, deterministic=True)
 
         # Publish commands

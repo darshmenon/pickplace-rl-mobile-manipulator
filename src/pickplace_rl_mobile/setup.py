@@ -21,11 +21,14 @@ setup(
             'launch/vla_phase1.launch.py',
             'launch/vla_full_pipeline.launch.py',
         ]),
-        ('share/' + package_name + '/urdf', ['urdf/pickplace_mobile_arm.urdf']),
+        ('share/' + package_name + '/urdf', [
+            'urdf/mobile_ur3.urdf',
+            'urdf/pickplace_mobile_arm.urdf',
+        ]),
         ('share/' + package_name + '/worlds', ['worlds/pickplace_world.world']),
         ('share/' + package_name + '/config', [
-            'config/training_config.yaml',
             'config/nav2_params.yaml',
+            'config/robot_view.rviz',
         ]),
     ],
     install_requires=['setuptools'],
