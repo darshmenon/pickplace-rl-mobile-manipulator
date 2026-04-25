@@ -41,6 +41,26 @@ class SaveBestVecNormalizeCallback(BaseCallback):
         return True
 
 
+class EntropyDecayCallback(BaseCallback):
+    """Linearly decay entropy coefficient from initial to final over decay_steps."""
+
+    def __init__(self, initial: float = 0.3, final: float = 0.05, decay_steps: int = 100000):
+        super().__init__()
+        self.initial = initial
+        self.final = final
+        self.decay_steps = decay_steps
+
+    def _on_step(self) -> bool:
+        t = min(self.num_timesteps, self.decay_steps)
+        ent_coef = self.initial + (self.final - self.initial) * (t / self.decay_steps)
+        self.model.ent_coef = ent_coef
+        self.model.ent_coef_tensor = torch.tensor(ent_coef, device=self.model.device)
+        if self.model.log_ent_coef is not None:
+            with torch.no_grad():
+                self.model.log_ent_coef.data.fill_(math.log(max(ent_coef, 1e-8)))
+        return True
+
+
 class CurriculumCallback(BaseCallback):
     """Advance staged curricula automatically after strong evaluation results."""
 
@@ -267,7 +287,7 @@ def train(total_timesteps=500000, save_dir='./models', n_envs=1, load_model=None
     eval_env.norm_reward = False
 
     ckpt_freq = max(10000 // n_envs, 1)
-    eval_freq = max(5000 // n_envs, 1)
+    eval_freq = max(10000 // n_envs, 1)
     checkpoint_callback = CheckpointCallback(
         save_freq=ckpt_freq,
         save_path=save_dir,
@@ -348,23 +368,27 @@ def train(total_timesteps=500000, save_dir='./models', n_envs=1, load_model=None
             learning_rate=3e-4,
             buffer_size=500000,
             learning_starts=1000,
-            batch_size=512,
+            batch_size=1024,
             tau=0.005,
             gamma=0.99,
             train_freq=1,
-            gradient_steps=1,
+            gradient_steps=2,
             top_quantiles_to_drop_per_net=2,
-            ent_coef=0.3,           # fixed — auto-tuning blows up for this env
+            ent_coef=0.3,           # decayed to 0.05 by EntropyDecayCallback
             policy_kwargs=policy_kwargs,
             verbose=1,
             device='auto',
             tensorboard_log=os.path.join(save_dir, 'tensorboard')
         )
 
+    callbacks = [checkpoint_callback, vecnorm_callback, eval_callback, curriculum_callback]
+    if not load_model:
+        callbacks.append(EntropyDecayCallback(initial=0.3, final=0.05, decay_steps=100000))
+
     print(f"Starting TQC training for {total_timesteps} timesteps across {n_envs} env(s)...")
     model.learn(
         total_timesteps=total_timesteps,
-        callback=[checkpoint_callback, vecnorm_callback, eval_callback, curriculum_callback],
+        callback=callbacks,
         progress_bar=True,
         reset_num_timesteps=not bool(load_model),
     )

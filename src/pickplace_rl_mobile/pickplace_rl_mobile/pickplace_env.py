@@ -194,6 +194,8 @@ class PickPlaceEnv(gym.Env):
                 randomize_target_pos=False,
                 randomize_observations=True,
                 randomize_actions=False,
+                randomize_object_size=True,
+                randomize_physics=True,
             ))
 
     def joint_state_callback(self, msg):
@@ -276,9 +278,9 @@ class PickPlaceEnv(gym.Env):
         """Shorter early-stage episodes improve reset rate and sample efficiency."""
         limits = {
             0: 1000,  # full task
-            1: 250,   # reach/alignment only
-            2: 350,   # grasp attempts
-            3: 450,   # verified grasp + lift
+            1: 150,   # reach/alignment only
+            2: 250,   # grasp attempts
+            3: 350,   # verified grasp + lift
             4: 700,   # transport almost-full task
             5: 1000,
         }
