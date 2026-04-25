@@ -67,9 +67,9 @@ def generate_launch_description():
             os.path.join(pkg_ros_gz_sim, 'launch', 'gz_sim.launch.py')
         ),
         launch_arguments=[('gz_args', PythonExpression([
-            "'-s -r -v 1 " + world_path + "' if '",
+            "'-s -r -v 1 --physics-engine gz-physics-bullet-featherstone-plugin " + world_path + "' if '",
             LaunchConfiguration('headless'),
-            "' == 'true' else '-r -v 1 " + world_path + "'"
+            "' == 'true' else '-r -v 1 --physics-engine gz-physics-bullet-featherstone-plugin " + world_path + "'"
         ]))]
     )
 

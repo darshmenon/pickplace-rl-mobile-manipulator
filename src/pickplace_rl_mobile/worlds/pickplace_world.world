@@ -2,10 +2,9 @@
 <sdf version="1.7">
   <world name="pickplace_world">
     
-    <physics type="ode">
+    <physics name="bullet_physics" type="bullet_featherstone">
       <max_step_size>0.001</max_step_size>
       <real_time_factor>1</real_time_factor>
-      <real_time_update_rate>0</real_time_update_rate>
     </physics>
 
     <!-- Lighting -->
