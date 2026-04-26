@@ -199,6 +199,7 @@ class PickPlaceEnv(gym.Env):
                 randomize_object_size=True,
                 randomize_physics=True,
             ))
+            self._apply_stage_randomization(self.curriculum_stage)
 
     def joint_state_callback(self, msg):
         n = len(msg.position)
@@ -287,6 +288,25 @@ class PickPlaceEnv(gym.Env):
             5: 1000,
         }
         return limits.get(self.curriculum_stage, 1000)
+
+    # Randomization ranges widen as curriculum advances — early stages stay narrow so the
+    # policy can learn the basic motion before facing the full distribution.
+    _STAGE_RANDOMIZATION = {
+        0: dict(obj_x_range=(0.45, 0.75), obj_y_range=(-0.15, 0.15), randomize_target_pos=True),
+        1: dict(obj_x_range=(0.57, 0.63), obj_y_range=(-0.03, 0.03), randomize_target_pos=False),
+        2: dict(obj_x_range=(0.54, 0.66), obj_y_range=(-0.06, 0.06), randomize_target_pos=False),
+        3: dict(obj_x_range=(0.50, 0.70), obj_y_range=(-0.10, 0.10), randomize_target_pos=False),
+        4: dict(obj_x_range=(0.47, 0.73), obj_y_range=(-0.13, 0.13), randomize_target_pos=True),
+        5: dict(obj_x_range=(0.45, 0.75), obj_y_range=(-0.15, 0.15), randomize_target_pos=True),
+    }
+
+    def _apply_stage_randomization(self, stage: int) -> None:
+        if self.randomizer is None:
+            return
+        params = self._STAGE_RANDOMIZATION.get(stage, self._STAGE_RANDOMIZATION[0])
+        self.randomizer.config.obj_x_range = params['obj_x_range']
+        self.randomizer.config.obj_y_range = params['obj_y_range']
+        self.randomizer.config.randomize_target_pos = params['randomize_target_pos']
 
     def set_curriculum_stage(self, curriculum_stage: int) -> None:
         """Queue curriculum changes so they take effect cleanly on the next reset."""
@@ -792,6 +812,7 @@ class PickPlaceEnv(gym.Env):
         if self._pending_curriculum_stage is not None:
             self.curriculum_stage = self._pending_curriculum_stage
             self._pending_curriculum_stage = None
+            self._apply_stage_randomization(self.curriculum_stage)
 
         self.episode_steps = 0
         self.object_grasped = False

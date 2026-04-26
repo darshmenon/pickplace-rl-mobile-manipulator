@@ -62,13 +62,22 @@ class EntropyDecayCallback(BaseCallback):
 
 
 class CurriculumCallback(BaseCallback):
-    """Advance staged curricula automatically after strong evaluation results."""
+    """Advance or revert staged curricula based on evaluation results."""
 
-    DEFAULT_THRESHOLDS = {
-        1: 50.0,
-        2: 250.0,
-        3: 600.0,
-        4: 900.0,
+    # Lowered from (50/250/600/900) to account for wider domain randomization.
+    ADVANCE_THRESHOLDS = {
+        1: 30.0,
+        2: 150.0,
+        3: 400.0,
+        4: 700.0,
+    }
+
+    # Revert to previous stage if reward falls this far below advance threshold.
+    REVERT_THRESHOLDS = {
+        2: 80.0,
+        3: 250.0,
+        4: 550.0,
+        5: 800.0,
     }
 
     def __init__(self, eval_callback: EvalCallback, eval_env, starting_stage: int):
@@ -78,17 +87,14 @@ class CurriculumCallback(BaseCallback):
         self.current_stage = int(starting_stage)
         self._last_eval_step = 0
 
-    def _advance_stage(self, next_stage: int, mean_reward: float) -> None:
-        self.training_env.env_method('set_curriculum_stage', next_stage)
-        self.eval_env.env_method('set_curriculum_stage', next_stage)
-        self.current_stage = next_stage
-        print(
-            f"Auto-advancing curriculum to stage {next_stage} "
-            f"after eval mean reward {mean_reward:.2f}"
-        )
+    def _set_stage(self, stage: int, mean_reward: float, reason: str) -> None:
+        self.training_env.env_method('set_curriculum_stage', stage)
+        self.eval_env.env_method('set_curriculum_stage', stage)
+        self.current_stage = stage
+        print(f"Curriculum {reason} to stage {stage} (eval reward {mean_reward:.2f})")
 
     def _on_step(self) -> bool:
-        if self.current_stage <= 0 or self.current_stage >= 5:
+        if self.current_stage <= 0:
             return True
         if self.eval_callback.n_calls == self._last_eval_step:
             return True
@@ -97,11 +103,19 @@ class CurriculumCallback(BaseCallback):
 
         self._last_eval_step = self.eval_callback.n_calls
         mean_reward = self.eval_callback.last_mean_reward
-        threshold = self.DEFAULT_THRESHOLDS.get(self.current_stage)
-        if threshold is None or mean_reward < threshold:
+
+        # Revert if reward has regressed significantly
+        revert_threshold = self.REVERT_THRESHOLDS.get(self.current_stage)
+        if revert_threshold is not None and mean_reward < revert_threshold and self.current_stage > 1:
+            self._set_stage(self.current_stage - 1, mean_reward, "REVERT")
             return True
 
-        self._advance_stage(self.current_stage + 1, mean_reward)
+        # Advance if reward is strong enough
+        if self.current_stage < 5:
+            advance_threshold = self.ADVANCE_THRESHOLDS.get(self.current_stage)
+            if advance_threshold is not None and mean_reward >= advance_threshold:
+                self._set_stage(self.current_stage + 1, mean_reward, "ADVANCE")
+
         return True
 
 
