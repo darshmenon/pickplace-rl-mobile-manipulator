@@ -366,7 +366,7 @@ def train(total_timesteps=500000, save_dir='./models', n_envs=1, load_model=None
             'MlpPolicy',
             env,
             learning_rate=3e-4,
-            buffer_size=500000,
+            buffer_size=1000000,
             learning_starts=1000,
             batch_size=1024,
             tau=0.005,

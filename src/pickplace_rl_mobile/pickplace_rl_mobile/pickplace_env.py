@@ -187,13 +187,15 @@ class PickPlaceEnv(gym.Env):
         self.randomizer = None
         if self.enable_domain_randomization:
             self.randomizer = DomainRandomizer(RandomizationConfig(
-                obj_x_range=(0.57, 0.63),
-                obj_y_range=(-0.03, 0.03),
+                obj_x_range=(0.45, 0.75),
+                obj_y_range=(-0.15, 0.15),
                 obj_z_base=0.1325,
+                target_x_range=(0.45, 0.75),
+                target_y_range=(0.3, 0.6),
                 target_z=float(self.target_pos[2]),
-                randomize_target_pos=False,
+                randomize_target_pos=True,
                 randomize_observations=True,
-                randomize_actions=False,
+                randomize_actions=True,
                 randomize_object_size=True,
                 randomize_physics=True,
             ))
