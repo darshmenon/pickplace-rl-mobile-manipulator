@@ -4,6 +4,7 @@ install/
 __pycache__/
 *.pyc
 .codex
+.claude/
 .config/
 .ignition/
 .ros_log/
@@ -11,3 +12,5 @@ __pycache__/
 rl_models/replay_buffer.pkl
 rl_models/monitor/
 rl_models/eval_monitor/
+rl_models/tensorboard/
+rl_models/pickplace_model_*_steps.zip
