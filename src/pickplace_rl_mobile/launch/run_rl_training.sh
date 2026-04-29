@@ -7,10 +7,37 @@
 #   ./run_rl_training.sh ./rl_models/best_model.zip       # resume explicit checkpoint
 #   ./run_rl_training.sh --curriculum-stage 2 --timesteps 200000 --headless
 
-set -euo pipefail
+set -eo pipefail
+
+export ORIGINAL_HOME="${HOME:-/home/asimov}"
 
 source /opt/ros/humble/setup.bash
 source install/setup.bash
+
+RUNTIME_ROOT="${PICKPLACE_RUNTIME_ROOT:-/tmp/pickplace_headless_runtime}"
+mkdir -p "$RUNTIME_ROOT/home" "$RUNTIME_ROOT/roslogs" "$RUNTIME_ROOT/mpl" "$RUNTIME_ROOT/xdg"
+
+export HOME="$RUNTIME_ROOT/home"
+export ROS_LOG_DIR="${ROS_LOG_DIR:-$RUNTIME_ROOT/roslogs}"
+export MPLCONFIGDIR="${MPLCONFIGDIR:-$RUNTIME_ROOT/mpl}"
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-$RUNTIME_ROOT/xdg}"
+export ROS_LOCALHOST_ONLY="${ROS_LOCALHOST_ONLY:-1}"
+export GZ_IP="${GZ_IP:-127.0.0.1}"
+export IGN_IP="${IGN_IP:-127.0.0.1}"
+
+USER_SITE_PACKAGES="$(
+python3 - <<'PY'
+import os
+import sys
+major, minor = sys.version_info[:2]
+original_home = os.environ.get('ORIGINAL_HOME', '')
+if original_home:
+    print(os.path.join(original_home, '.local', 'lib', f'python{major}.{minor}', 'site-packages'))
+PY
+)"
+if [ -n "$USER_SITE_PACKAGES" ] && [ -d "$USER_SITE_PACKAGES" ]; then
+    export PYTHONPATH="$USER_SITE_PACKAGES${PYTHONPATH:+:$PYTHONPATH}"
+fi
 
 MODEL_PATH=""
 HEADLESS=false
@@ -111,6 +138,7 @@ fi
 echo "[run_rl_training] timesteps=$TIMESTEPS curriculum_stage=$CURRICULUM_STAGE save_dir=$SAVE_DIR headless=$HEADLESS"
 echo "[run_rl_training] train world: ROS_DOMAIN_ID=$TRAIN_DOMAIN GZ_PARTITION=$TRAIN_PARTITION"
 echo "[run_rl_training] eval world:  ROS_DOMAIN_ID=$EVAL_DOMAIN GZ_PARTITION=$EVAL_PARTITION (headless)"
+echo "[run_rl_training] runtime root: $RUNTIME_ROOT"
 
 env ROS_DOMAIN_ID=$TRAIN_DOMAIN GZ_PARTITION=$TRAIN_PARTITION \
     ros2 launch pickplace_rl_mobile gazebo.launch.py headless:=$HEADLESS &

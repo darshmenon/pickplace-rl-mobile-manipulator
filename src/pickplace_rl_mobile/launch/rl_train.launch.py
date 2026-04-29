@@ -1,7 +1,29 @@
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument
+from launch.actions import DeclareLaunchArgument, OpaqueFunction
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
+
+def _make_train_node(context):
+    args = [
+        '--timesteps', LaunchConfiguration('timesteps').perform(context),
+        '--save-dir', LaunchConfiguration('save_dir').perform(context),
+        '--curriculum-stage', LaunchConfiguration('curriculum_stage').perform(context),
+    ]
+
+    load_model = LaunchConfiguration('load_model').perform(context).strip()
+    if load_model:
+        args.extend(['--load-model', load_model])
+
+    rl_node = Node(
+        package='pickplace_rl_mobile',
+        executable='train_rl',
+        name='rl_env_node',
+        output='screen',
+        arguments=args,
+    )
+
+    return [rl_node]
+
 
 def generate_launch_description():
     timesteps_arg = DeclareLaunchArgument(
@@ -25,23 +47,10 @@ def generate_launch_description():
         description='Path to a saved model to resume training'
     )
 
-    rl_node = Node(
-        package='pickplace_rl_mobile',
-        executable='train_rl',
-        name='rl_env_node',
-        output='screen',
-        arguments=[
-            '--timesteps', LaunchConfiguration('timesteps'),
-            '--save-dir', LaunchConfiguration('save_dir'),
-            '--curriculum-stage', LaunchConfiguration('curriculum_stage'),
-            '--load-model', LaunchConfiguration('load_model'),
-        ]
-    )
-
     return LaunchDescription([
         timesteps_arg,
         save_dir_arg,
         curriculum_stage_arg,
         load_model_arg,
-        rl_node
+        OpaqueFunction(function=_make_train_node),
     ])
