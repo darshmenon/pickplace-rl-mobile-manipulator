@@ -94,17 +94,13 @@ int main(int argc, char** argv) {
 
   // Create PipelinePlanner for Pilz (moderate computational requirements, inherently considers obstacles)
   // Found via -> ros2 service call /query_planner_interface moveit_msgs/srv/QueryPlannerInterfaces "{}"
-  std::unordered_map<std::string, std::string> pilz_map = {
-    {"pilz_industrial_motion_planner", "PTP"}
-  };
-  auto pilz_planner = std::make_shared<solvers::PipelinePlanner>(node, pilz_map);
+  auto pilz_planner = std::make_shared<solvers::PipelinePlanner>(node, "pilz_industrial_motion_planner");
+  pilz_planner->setPlannerId("PTP");
   RCLCPP_INFO(logger, "Pilz planner created");
 
   // Create PipelinePlanner for OMPL (high computational requirements, best for complex paths with many obstacles)
-  std::unordered_map<std::string, std::string> ompl_map = {
-    {"ompl", "arm[RRTConnectkConfigDefault]"}
-  };
-  auto ompl_planner = std::make_shared<solvers::PipelinePlanner>(node, ompl_map);
+  auto ompl_planner = std::make_shared<solvers::PipelinePlanner>(node, "ompl");
+  ompl_planner->setPlannerId("arm[RRTConnectkConfigDefault]");
   RCLCPP_INFO(logger, "OMPL planner created");
 
   // Define the target end state for all task plans
@@ -216,6 +212,5 @@ int main(int argc, char** argv) {
 
   return 0;
 }
-
 
 

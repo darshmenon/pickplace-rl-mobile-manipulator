@@ -748,7 +748,7 @@
     <parent link="robotiq_arg2f_base_link" />
     <child link="right_outer_knuckle" />
     <axis xyz="1 0 0" />
-    <limit effort="1000" lower="0" upper="0.81" velocity="2.0" />
+    <limit effort="1000" lower="-0.81" upper="0" velocity="2.0" />
     <mimic joint="finger_joint" multiplier="-1" offset="0" />
   </joint>
   <joint name="right_outer_finger_joint" type="fixed">
