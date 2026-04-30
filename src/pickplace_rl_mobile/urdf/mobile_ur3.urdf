@@ -749,7 +749,7 @@
     <child link="right_outer_knuckle" />
     <axis xyz="1 0 0" />
     <limit effort="1000" lower="0" upper="0.81" velocity="2.0" />
-    <mimic joint="finger_joint" multiplier="-1" offset="0" />
+    <mimic joint="finger_joint" multiplier="1" offset="0" />
   </joint>
   <joint name="right_outer_finger_joint" type="fixed">
     <origin rpy="0 0 0" xyz="0 0.0315 -0.0041" />

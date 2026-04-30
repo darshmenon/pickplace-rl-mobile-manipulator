@@ -13,9 +13,11 @@ Brings up the complete system:
 """
 
 import os
+import re
 from launch import LaunchDescription
 from launch.actions import (
-    IncludeLaunchDescription, DeclareLaunchArgument, GroupAction, TimerAction
+    IncludeLaunchDescription, DeclareLaunchArgument, GroupAction, TimerAction,
+    AppendEnvironmentVariable
 )
 from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
@@ -24,16 +26,46 @@ from launch_ros.actions import Node
 from ament_index_python.packages import get_package_share_directory
 
 
-def generate_launch_description():
-    from launch.substitutions import Command
-    from launch_ros.parameter_descriptions import ParameterValue
+def resolve_package_uris(urdf_str):
+    """Replace package:// URIs with absolute file:// paths so Gazebo can find meshes."""
+    def replace(match):
+        pkg = match.group(1)
+        rel = match.group(2)
+        try:
+            share = get_package_share_directory(pkg)
+            return f'file://{share}/{rel}'
+        except Exception:
+            return match.group(0)
+    return re.sub(r'package://([^/]+)/([^"\'>\s]+)', replace, urdf_str)
 
-    pkg_dir = get_package_share_directory('pickplace_rl_mobile')
+
+def get_pickplace_share_dir():
+    """Resolve active package share dir while supporting symlink-install/source runs."""
+    launch_dir = os.path.dirname(os.path.abspath(__file__))
+    source_share = os.path.dirname(launch_dir)
+    if os.path.exists(os.path.join(source_share, 'urdf', 'mobile_ur3.urdf')):
+        return source_share
+    return get_package_share_directory('pickplace_rl_mobile')
+
+
+def generate_launch_description():
+    pkg_dir = get_pickplace_share_dir()
     urdf_file = os.path.join(pkg_dir, 'urdf', 'mobile_ur3.urdf')
     world_file = os.path.join(pkg_dir, 'worlds', 'pickplace_world.world')
     nav2_params = os.path.join(pkg_dir, 'config', 'nav2_params.yaml')
+    ur_description_share = get_package_share_directory('ur_description')
+    robotiq_share = get_package_share_directory('robotiq_2f_85_gripper_visualization')
 
-    robot_description_content = ParameterValue(Command(['xacro ', urdf_file]), value_type=str)
+    with open(urdf_file, 'r') as f:
+        robot_description_content = resolve_package_uris(f.read())
+
+    set_gz_resource_path = AppendEnvironmentVariable(
+        'GZ_SIM_RESOURCE_PATH',
+        ':'.join([
+            os.path.join(ur_description_share, '..'),
+            os.path.join(robotiq_share, '..'),
+        ])
+    )
 
     # Launch arguments
     use_nav2_arg = DeclareLaunchArgument(
@@ -56,7 +88,9 @@ def generate_launch_description():
                 get_package_share_directory('ros_gz_sim'),
                 'launch', 'gz_sim.launch.py')
         ]),
-        launch_arguments={'gz_args': f'-r {world_file}'}.items()
+        launch_arguments={
+            'gz_args': f'-r -v 1 --physics-engine gz-physics-bullet-featherstone-plugin {world_file}'
+        }.items()
     )
 
     # Robot state publisher
@@ -77,15 +111,10 @@ def generate_launch_description():
         executable='create',
         arguments=[
             '-world', 'pickplace_world',
-            '-name', 'pickplace_robot',
+            '-name', 'mobile_ur3',
+            '-allow_renaming', 'true',
             '-topic', 'robot_description',
-            '-x', '0.0', '-y', '0.5', '-z', '0.1',
-            '-J', 'shoulder_pan_joint', '0.0',
-            '-J', 'shoulder_lift_joint', '-1.57',
-            '-J', 'elbow_joint', '1.57',
-            '-J', 'wrist_1_joint', '-1.57',
-            '-J', 'wrist_2_joint', '-1.57',
-            '-J', 'wrist_3_joint', '0.0'
+            '-x', '0.0', '-y', '0.0', '-z', '0.08'
         ],
         output='screen'
     )
@@ -187,6 +216,7 @@ def generate_launch_description():
         use_rl_arg,
         model_path_arg,
         use_perception_arg,
+        set_gz_resource_path,
         gazebo,
         robot_state_publisher,
         delayed,

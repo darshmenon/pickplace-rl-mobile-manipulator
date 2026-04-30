@@ -41,10 +41,18 @@ _ARM_JOINT_NAMES = [
     'wrist_2_joint',
     'wrist_3_joint',
 ]
+_ARM_JOINT_LIMITS = [
+    (-2 * np.pi, 2 * np.pi),
+    (-2 * np.pi, 2 * np.pi),
+    (-np.pi, np.pi),
+    (-2 * np.pi, 2 * np.pi),
+    (-2 * np.pi, 2 * np.pi),
+    (-np.inf, np.inf),
+]
 _MIMIC_MULTIPLIERS = {
     'left_inner_knuckle_joint': 1.0,
     'left_inner_finger_joint': -1.0,
-    'right_outer_knuckle_joint': -1.0,
+    'right_outer_knuckle_joint': 1.0,
     'right_inner_knuckle_joint': 1.0,
     'right_inner_finger_joint': -1.0,
 }
@@ -327,7 +335,11 @@ class ManipRLNode(Node):
 
     def get_end_effector_pos(self) -> np.ndarray:
         """Compute EE position in world frame using the same FK as the env."""
-        ee_in_base = _ur3_fk(self.joint_positions[:6]) + _ARM_MOUNT_XYZ
+        ee_in_arm_base = _ur3_fk(self.joint_positions[:6])
+        ee_in_base = _ARM_MOUNT_XYZ + np.array(
+            [-ee_in_arm_base[0], -ee_in_arm_base[1], ee_in_arm_base[2]],
+            dtype=np.float32,
+        )
         btheta = float(self.base_pose[2])
         c = np.cos(btheta)
         s = np.sin(btheta)
@@ -344,6 +356,22 @@ class ManipRLNode(Node):
         while error < -np.pi:
             error += 2 * np.pi
         return error
+
+    def _joint_error(self, joint_index: int, target: float) -> float:
+        current = float(self.joint_positions[joint_index])
+        if joint_index in [0, 1, 3, 4, 5]:
+            return self._angle_error(target, current)
+        return float(target) - current
+
+    def _limit_safe_joint_vels(self, joint_vels: np.ndarray) -> np.ndarray:
+        safe = np.asarray(joint_vels, dtype=np.float32).copy()
+        for idx, (lower, upper) in enumerate(_ARM_JOINT_LIMITS):
+            pos = float(self.joint_positions[idx])
+            if np.isfinite(lower) and pos <= lower + 0.03 and safe[idx] < 0.0:
+                safe[idx] = 0.0
+            if np.isfinite(upper) and pos >= upper - 0.03 and safe[idx] > 0.0:
+                safe[idx] = 0.0
+        return safe
 
     def _scripted_pregrasp_step(self) -> None:
         """Match the training reset pre-grasp before handing off to the policy."""
@@ -362,20 +390,30 @@ class ManipRLNode(Node):
         self.cmd_vel_pub.publish(twist)
 
         desired = [0.0, -1.7, 2.0, -1.0]
-        for pub, joint_pos, target in zip(self.arm_joint_pubs[:4], self.joint_positions[:4], desired):
-            err = float(target) - float(joint_pos)
+        for idx, (pub, target) in enumerate(zip(self.arm_joint_pubs[:4], desired)):
+            err = self._joint_error(idx, target)
             vel = np.clip(err * 2.0, -0.4, 0.4) if abs(err) > 0.05 else 0.0
             pub.publish(Float64(data=float(vel)))
 
         ee_pos = self.get_end_effector_pos()
         ee_dist_xy = np.linalg.norm(ee_pos[:2] - obj_pos[:2])
+        joint_errors = [abs(self._joint_error(idx, target)) for idx, target in enumerate(desired)]
+        base_ready = bx >= 0.15 and abs(angle_err) < 0.4
+        arm_ready = max(joint_errors) < 0.08
         self.pregrasp_steps += 1
-        if (ee_dist_xy < 0.30 and abs(angle_err) < 0.4) or self.pregrasp_steps >= 800:
+        if ee_dist_xy < 0.30 and base_ready and arm_ready:
             self.cmd_vel_pub.publish(Twist())
             self.pregrasp_complete = True
             self.get_logger().info(
                 f'Pregrasp complete after {self.pregrasp_steps} steps '
                 f'(ee_xy_dist={ee_dist_xy:.3f}, angle_err={angle_err:.3f})'
+            )
+        elif self.pregrasp_steps % 200 == 0:
+            self.get_logger().warn(
+                f'Still pregrasping: ee_xy_dist={ee_dist_xy:.3f}, '
+                f'angle_err={angle_err:.3f}, base_x={bx:.3f}, '
+                f'joint_err={np.round(joint_errors, 3).tolist()}, '
+                f'joints={np.round(self.joint_positions[:4], 3).tolist()}'
             )
 
     def update_phase(self) -> None:
@@ -437,6 +475,7 @@ class ManipRLNode(Node):
         """Publish joint velocities and base twist from action vector."""
         action = np.asarray(action, dtype=np.float32).reshape(-1)
         joint_vels = action[:6] * self.joint_vel_scale
+        joint_vels = self._limit_safe_joint_vels(joint_vels)
         gripper_cmd = float(action[6])
         base_linear = float(action[7]) * self.base_lin_scale
         base_angular = float(action[8]) * self.base_ang_scale
