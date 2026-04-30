@@ -481,7 +481,7 @@
       <geometry>
         <mesh filename="package://robotiq_2f_85_gripper_visualization/meshes/visual/robotiq_arg2f_85_base_link.dae" scale="0.001 0.001 0.001" />
       </geometry>
-      <material name="">
+      <material name="gripper_surface">
         <color rgba="0.1 0.1 0.1 1" />
       </material>
     </visual>
@@ -503,7 +503,7 @@
       <geometry>
         <mesh filename="package://robotiq_2f_85_gripper_visualization/meshes/visual/robotiq_arg2f_85_outer_knuckle.dae" scale="0.001 0.001 0.001" />
       </geometry>
-      <material name="">
+      <material name="gripper_surface">
         <color rgba="0.792156862745098 0.819607843137255 0.933333333333333 1" />
       </material>
     </visual>
@@ -525,7 +525,7 @@
       <geometry>
         <mesh filename="package://robotiq_2f_85_gripper_visualization/meshes/visual/robotiq_arg2f_85_outer_finger.dae" scale="0.001 0.001 0.001" />
       </geometry>
-      <material name="">
+      <material name="gripper_surface">
         <color rgba="0.1 0.1 0.1 1" />
       </material>
     </visual>
@@ -547,7 +547,7 @@
       <geometry>
         <mesh filename="package://robotiq_2f_85_gripper_visualization/meshes/visual/robotiq_arg2f_85_inner_finger.dae" scale="0.001 0.001 0.001" />
       </geometry>
-      <material name="">
+      <material name="gripper_surface">
         <color rgba="0.1 0.1 0.1 1" />
       </material>
     </visual>
@@ -564,7 +564,7 @@
       <geometry>
         <box size="0.022 0.00635 0.0375" />
       </geometry>
-      <material name="">
+      <material name="gripper_surface">
         <color rgba="0.9 0.9 0.9 1" />
       </material>
     </visual>
@@ -573,7 +573,7 @@
       <geometry>
         <box size="0.022 0.00635 0.0375" />
       </geometry>
-      <material name="">
+      <material name="gripper_surface">
         <color rgba="0.9 0.0 0.0 1" />
       </material>
     </collision>
@@ -589,7 +589,7 @@
       <geometry>
         <mesh filename="package://robotiq_2f_85_gripper_visualization/meshes/visual/robotiq_arg2f_85_inner_knuckle.dae" scale="0.001 0.001 0.001" />
       </geometry>
-      <material name="">
+      <material name="gripper_surface">
         <color rgba="0.1 0.1 0.1 1" />
       </material>
     </visual>
@@ -611,7 +611,7 @@
       <geometry>
         <mesh filename="package://robotiq_2f_85_gripper_visualization/meshes/visual/robotiq_arg2f_85_outer_knuckle.dae" scale="0.001 0.001 0.001" />
       </geometry>
-      <material name="">
+      <material name="gripper_surface">
         <color rgba="0.792156862745098 0.819607843137255 0.933333333333333 1" />
       </material>
     </visual>
@@ -633,7 +633,7 @@
       <geometry>
         <mesh filename="package://robotiq_2f_85_gripper_visualization/meshes/visual/robotiq_arg2f_85_outer_finger.dae" scale="0.001 0.001 0.001" />
       </geometry>
-      <material name="">
+      <material name="gripper_surface">
         <color rgba="0.1 0.1 0.1 1" />
       </material>
     </visual>
@@ -655,7 +655,7 @@
       <geometry>
         <mesh filename="package://robotiq_2f_85_gripper_visualization/meshes/visual/robotiq_arg2f_85_inner_finger.dae" scale="0.001 0.001 0.001" />
       </geometry>
-      <material name="">
+      <material name="gripper_surface">
         <color rgba="0.1 0.1 0.1 1" />
       </material>
     </visual>
@@ -672,7 +672,7 @@
       <geometry>
         <box size="0.022 0.00635 0.0375" />
       </geometry>
-      <material name="">
+      <material name="gripper_surface">
         <color rgba="0.9 0.9 0.9 1" />
       </material>
     </visual>
@@ -681,7 +681,7 @@
       <geometry>
         <box size="0.022 0.00635 0.0375" />
       </geometry>
-      <material name="">
+      <material name="gripper_surface">
         <color rgba="0.9 0.0 0.0 1" />
       </material>
     </collision>
@@ -697,7 +697,7 @@
       <geometry>
         <mesh filename="package://robotiq_2f_85_gripper_visualization/meshes/visual/robotiq_arg2f_85_inner_knuckle.dae" scale="0.001 0.001 0.001" />
       </geometry>
-      <material name="">
+      <material name="gripper_surface">
         <color rgba="0.1 0.1 0.1 1" />
       </material>
     </visual>
@@ -838,32 +838,6 @@
       <joint_name>finger_joint</joint_name>
       <initial_velocity>0.0</initial_velocity>
       <topic>/finger_joint/cmd_vel</topic>
-    </plugin>
-    <!-- Mimic joints manual controllers -->
-    <plugin filename="gz-sim-joint-controller-system" name="gz::sim::systems::JointController">
-      <joint_name>left_inner_knuckle_joint</joint_name>
-      <initial_velocity>0.0</initial_velocity>
-      <topic>/left_inner_knuckle_joint/cmd_vel</topic>
-    </plugin>
-    <plugin filename="gz-sim-joint-controller-system" name="gz::sim::systems::JointController">
-      <joint_name>left_inner_finger_joint</joint_name>
-      <initial_velocity>0.0</initial_velocity>
-      <topic>/left_inner_finger_joint/cmd_vel</topic>
-    </plugin>
-    <plugin filename="gz-sim-joint-controller-system" name="gz::sim::systems::JointController">
-      <joint_name>right_outer_knuckle_joint</joint_name>
-      <initial_velocity>0.0</initial_velocity>
-      <topic>/right_outer_knuckle_joint/cmd_vel</topic>
-    </plugin>
-    <plugin filename="gz-sim-joint-controller-system" name="gz::sim::systems::JointController">
-      <joint_name>right_inner_knuckle_joint</joint_name>
-      <initial_velocity>0.0</initial_velocity>
-      <topic>/right_inner_knuckle_joint/cmd_vel</topic>
-    </plugin>
-    <plugin filename="gz-sim-joint-controller-system" name="gz::sim::systems::JointController">
-      <joint_name>right_inner_finger_joint</joint_name>
-      <initial_velocity>0.0</initial_velocity>
-      <topic>/right_inner_finger_joint/cmd_vel</topic>
     </plugin>
   </gazebo>
 

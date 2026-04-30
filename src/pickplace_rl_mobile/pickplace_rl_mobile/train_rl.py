@@ -403,7 +403,7 @@ def train(total_timesteps=500000, save_dir='./models', n_envs=1, load_model=None
     model.learn(
         total_timesteps=total_timesteps,
         callback=callbacks,
-        progress_bar=True,
+        progress_bar=False,
         reset_num_timesteps=not bool(load_model),
     )
 

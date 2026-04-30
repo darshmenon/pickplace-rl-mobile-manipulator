@@ -9,6 +9,7 @@
 
 set -eo pipefail
 
+export PYTHONUNBUFFERED=1
 export ORIGINAL_HOME="${HOME:-/home/asimov}"
 
 source /opt/ros/humble/setup.bash
