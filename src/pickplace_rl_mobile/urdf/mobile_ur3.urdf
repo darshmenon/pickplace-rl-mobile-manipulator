@@ -808,36 +808,43 @@
       <joint_name>shoulder_pan_joint</joint_name>
       <initial_velocity>0.0</initial_velocity>
       <topic>/shoulder_pan_joint/cmd_vel</topic>
+      <use_force_commands>false</use_force_commands>
     </plugin>
     <plugin filename="gz-sim-joint-controller-system" name="gz::sim::systems::JointController">
       <joint_name>shoulder_lift_joint</joint_name>
       <initial_velocity>0.0</initial_velocity>
       <topic>/shoulder_lift_joint/cmd_vel</topic>
+      <use_force_commands>false</use_force_commands>
     </plugin>
     <plugin filename="gz-sim-joint-controller-system" name="gz::sim::systems::JointController">
       <joint_name>elbow_joint</joint_name>
       <initial_velocity>0.0</initial_velocity>
       <topic>/elbow_joint/cmd_vel</topic>
+      <use_force_commands>false</use_force_commands>
     </plugin>
     <plugin filename="gz-sim-joint-controller-system" name="gz::sim::systems::JointController">
       <joint_name>wrist_1_joint</joint_name>
       <initial_velocity>0.0</initial_velocity>
       <topic>/wrist_1_joint/cmd_vel</topic>
+      <use_force_commands>false</use_force_commands>
     </plugin>
     <plugin filename="gz-sim-joint-controller-system" name="gz::sim::systems::JointController">
       <joint_name>wrist_2_joint</joint_name>
       <initial_velocity>0.0</initial_velocity>
       <topic>/wrist_2_joint/cmd_vel</topic>
+      <use_force_commands>false</use_force_commands>
     </plugin>
     <plugin filename="gz-sim-joint-controller-system" name="gz::sim::systems::JointController">
       <joint_name>wrist_3_joint</joint_name>
       <initial_velocity>0.0</initial_velocity>
       <topic>/wrist_3_joint/cmd_vel</topic>
+      <use_force_commands>false</use_force_commands>
     </plugin>
     <plugin filename="gz-sim-joint-controller-system" name="gz::sim::systems::JointController">
       <joint_name>finger_joint</joint_name>
       <initial_velocity>0.0</initial_velocity>
       <topic>/finger_joint/cmd_vel</topic>
+      <use_force_commands>false</use_force_commands>
     </plugin>
   </gazebo>
 
