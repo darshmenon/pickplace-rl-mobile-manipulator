@@ -134,6 +134,8 @@ class ManipRLNode(Node):
         self.vecnormalize = None
         self.model_loaded = False
         self.perception_received = False
+        self.pregrasp_complete = False
+        self.pregrasp_steps = 0
         self.observation_mode = 'legacy27'
         self.prev_action = np.zeros(9, dtype=np.float32)
         self._joint_state_position_map = {}
@@ -335,6 +337,68 @@ class ManipRLNode(Node):
             _BASE_SPAWN_Z + ee_in_base[2],
         ], dtype=np.float32)
 
+    def _angle_error(self, target: float, current: float) -> float:
+        error = float(target) - float(current)
+        while error > np.pi:
+            error -= 2 * np.pi
+        while error < -np.pi:
+            error += 2 * np.pi
+        return error
+
+    def _scripted_pregrasp_step(self) -> None:
+        """Match the training reset pre-grasp before handing off to the policy."""
+        obj_pos = self.object_pos
+        bx, by, btheta = self.base_pose
+        dx = float(obj_pos[0]) - float(bx)
+        dy = float(obj_pos[1]) - float(by)
+
+        angle_to = np.arctan2(dy, dx)
+        angle_err = self._angle_error(angle_to, btheta)
+
+        twist = Twist()
+        twist.angular.z = float(np.clip(angle_err * 2.0, -1.0, 1.0))
+        if bx < 0.16 and abs(angle_err) < 0.4:
+            twist.linear.x = float(np.clip((0.16 - bx) * 3.0, 0.0, 0.2))
+        self.cmd_vel_pub.publish(twist)
+
+        desired = [0.0, -1.7, 2.0, -1.0]
+        for pub, joint_pos, target in zip(self.arm_joint_pubs[:4], self.joint_positions[:4], desired):
+            err = float(target) - float(joint_pos)
+            vel = np.clip(err * 2.0, -0.4, 0.4) if abs(err) > 0.05 else 0.0
+            pub.publish(Float64(data=float(vel)))
+
+        ee_pos = self.get_end_effector_pos()
+        ee_dist_xy = np.linalg.norm(ee_pos[:2] - obj_pos[:2])
+        self.pregrasp_steps += 1
+        if (ee_dist_xy < 0.30 and abs(angle_err) < 0.4) or self.pregrasp_steps >= 800:
+            self.cmd_vel_pub.publish(Twist())
+            self.pregrasp_complete = True
+            self.get_logger().info(
+                f'Pregrasp complete after {self.pregrasp_steps} steps '
+                f'(ee_xy_dist={ee_dist_xy:.3f}, angle_err={angle_err:.3f})'
+            )
+
+    def update_phase(self) -> None:
+        """Advance the coarse pick phases using the same thresholds as training."""
+        ee_pos = self.get_end_effector_pos()
+        obj_pos = self.object_pos
+        gripper_pos = float(self.joint_positions[6])
+
+        if self.current_phase == 1:
+            grasp_z = float(obj_pos[2]) if obj_pos[2] > 0.02 else 0.055
+            dist_z = abs(float(ee_pos[2]) - grasp_z)
+            dist_xy = np.linalg.norm(ee_pos[:2] - obj_pos[:2])
+            if dist_z < 0.06 and dist_xy < 0.09:
+                self.current_phase = 2
+                self.get_logger().info('Advanced to phase 2: grasp approach')
+        elif self.current_phase == 2:
+            xy_dist = np.linalg.norm(ee_pos[:2] - obj_pos[:2])
+            z_dist = abs(float(ee_pos[2]) - float(obj_pos[2]))
+            if gripper_pos > 0.7 and xy_dist < 0.05 and z_dist < 0.04:
+                self.object_grasped = True
+                self.current_phase = 3
+                self.get_logger().info('Advanced to phase 3: lift attempt')
+
     def build_observation(self) -> np.ndarray:
         """Build an observation vector matching the trained policy format."""
         ee_pos = self.get_end_effector_pos()
@@ -376,6 +440,9 @@ class ManipRLNode(Node):
         gripper_cmd = float(action[6])
         base_linear = float(action[7]) * self.base_lin_scale
         base_angular = float(action[8]) * self.base_ang_scale
+        if self.current_phase in [1, 2, 3]:
+            base_linear = 0.0
+            base_angular = 0.0
 
         for pub, joint_vel in zip(self.arm_joint_pubs, joint_vels):
             pub.publish(Float64(data=float(joint_vel)))
@@ -405,6 +472,12 @@ class ManipRLNode(Node):
             self.get_logger().debug(
                 'Waiting for perception data...', throttle_duration_sec=5.0)
             return
+
+        if not self.pregrasp_complete:
+            self._scripted_pregrasp_step()
+            return
+
+        self.update_phase()
 
         # Build observation and get action from policy
         obs = self.build_observation()

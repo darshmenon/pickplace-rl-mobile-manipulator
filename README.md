@@ -149,7 +149,7 @@ Episode reset()
     ├── Randomise object XY ±4 cm (domain randomisation)
     ├── Scripted pre-grasp (P-controller, up to 300 steps):
     │       · Turn base to face object
-    │       · Drive forward only while chassis_x ≤ 0.04 m
+    │       · Drive forward only while chassis_x ≤ 0.16 m
     │         (keeps 6 cm front caster clear of bin back wall at x≈0.40 m)
     │       · Extend arm: pan=0, shoulder=-1.7, elbow=2.0, wrist_1=-1.0
     │       · Break when EE within 30 cm XY of object
@@ -197,21 +197,42 @@ source install/setup.bash
 
 ## Quick Start
 
+Build and source first:
+
 ```bash
-# Launch with Gazebo GUI (watch the robot)
-bash src/pickplace_rl_mobile/launch/run_rl_training.sh
+source /opt/ros/humble/setup.bash
+colcon build --packages-select pickplace_rl_mobile --symlink-install
+source install/setup.bash
+```
 
-# Launch headless — no GUI window, ~3-4× faster fps
-bash src/pickplace_rl_mobile/launch/run_rl_training.sh --headless
+Run the best saved policy in Gazebo:
 
-# Resume from best checkpoint, GUI
-bash src/pickplace_rl_mobile/launch/run_rl_training.sh ./rl_models/best_model.zip
+```bash
+ros2 launch pickplace_rl_mobile full_system.launch.py \
+  use_rl:=true \
+  use_perception:=false \
+  model_path:=./rl_models/best_model/best_model.zip
+```
 
-# Resume from best checkpoint, headless (recommended for long runs)
-bash src/pickplace_rl_mobile/launch/run_rl_training.sh ./rl_models/best_model.zip --headless
+`use_perception:=false` uses the world-file fallback object pose `[0.6, 0.0, 0.1325]`, which matches the red pickup box in `pickplace_world.world`.
 
-# Resume from the latest numbered checkpoint
-bash src/pickplace_rl_mobile/launch/run_rl_training.sh ./rl_models/pickplace_model_580000_steps.zip --headless
+Train or resume training:
+
+```bash
+# Resume best checkpoint, with Gazebo GUI if DISPLAY works
+bash src/pickplace_rl_mobile/launch/run_rl_training.sh --resume-best
+
+# Resume best checkpoint, headless
+bash src/pickplace_rl_mobile/launch/run_rl_training.sh --resume-best --headless
+
+# Resume latest numbered checkpoint
+bash src/pickplace_rl_mobile/launch/run_rl_training.sh --resume-latest --headless
+
+# Start fresh
+bash src/pickplace_rl_mobile/launch/run_rl_training.sh --fresh --headless
+
+# Train a specific curriculum stage
+bash src/pickplace_rl_mobile/launch/run_rl_training.sh --curriculum-stage 2 --timesteps 200000 --headless
 ```
 
 This is the **recommended launch path** for RL work because it starts Gazebo and the trainer with the wiring used by the current checkpoints.
@@ -223,14 +244,17 @@ This is the **recommended launch path** for RL work because it starts Gazebo and
 ### RL training
 
 ```bash
-# Fresh run
-bash src/pickplace_rl_mobile/launch/run_rl_training.sh --headless
+# Resume best checkpoint
+bash src/pickplace_rl_mobile/launch/run_rl_training.sh --resume-best --headless
 
-# Resume from the best checkpoint
-bash src/pickplace_rl_mobile/launch/run_rl_training.sh ./rl_models/best_model.zip --headless
+# Start a fresh run
+bash src/pickplace_rl_mobile/launch/run_rl_training.sh --fresh --headless
 
 # Resume from the latest numbered checkpoint
-bash src/pickplace_rl_mobile/launch/run_rl_training.sh ./rl_models/pickplace_model_580000_steps.zip --headless
+bash src/pickplace_rl_mobile/launch/run_rl_training.sh --resume-latest --headless
+
+# Resume an explicit checkpoint
+bash src/pickplace_rl_mobile/launch/run_rl_training.sh ./rl_models/pickplace_model_690000_steps.zip --headless
 ```
 
 ### Gazebo only
@@ -250,18 +274,21 @@ Use this only if Gazebo is already running in another terminal.
 ros2 launch pickplace_rl_mobile rl_train.launch.py
 
 # Resume from a saved checkpoint
-ros2 launch pickplace_rl_mobile rl_train.launch.py load_model:=./rl_models/best_model.zip
+ros2 launch pickplace_rl_mobile rl_train.launch.py load_model:=./rl_models/best_model/best_model.zip
 ```
 
 ### Full system launch
 
-This path is useful for the broader stack, but the RL training workflow above is the main maintained path for checkpointed learning.
+This path runs the broader stack for inference/demo. Use the training script above for checkpointed learning.
 
 ```bash
 ros2 launch pickplace_rl_mobile full_system.launch.py
 
 # Full system with RL inference node
-ros2 launch pickplace_rl_mobile full_system.launch.py use_rl:=true model_path:=./rl_models/best_model.zip
+ros2 launch pickplace_rl_mobile full_system.launch.py \
+  use_rl:=true \
+  use_perception:=false \
+  model_path:=./rl_models/best_model/best_model.zip
 
 # Full system with Nav2
 ros2 launch pickplace_rl_mobile full_system.launch.py use_nav2:=true
@@ -287,23 +314,22 @@ ros2 launch pickplace_rl_mobile display_launch.py
 ## Training
 
 ```bash
-# Watch live rewards (log written by ros2 launch)
-grep -a "ep_rew_mean\|fps" /tmp/training.log | tail -10
-
 # TensorBoard
 tensorboard --logdir ./rl_models/tensorboard
 # open http://localhost:6006
 
-# Kill everything cleanly
-pkill -9 -f "gz|ros2|train_rl|parameter_bridge"
-
-# Check EE and object pose live
+# Check live state
 ros2 topic echo /joint_states --once
 ros2 topic echo /odom --once
-ros2 topic echo /world/pickplace_world/dynamic_pose/info --once
+
+# Check whether the policy is publishing arm commands
+ros2 topic hz /shoulder_pan_joint/cmd_vel --window 5
+
+# Stop Gazebo/ROS if needed
+pkill -f "gz sim|ros2 launch|parameter_bridge|train_rl"
 ```
 
-Checkpoints save every 10 k steps to `./rl_models/`. `best_model.zip` updates automatically on eval improvement. VecNormalize stats save to `./rl_models/vecnormalize.pkl` and replay data to `./rl_models/replay_buffer.pkl`; both are reused automatically on resume when compatible.
+Checkpoints save every 10 k steps to `./rl_models/`. The best eval checkpoint is `./rl_models/best_model/best_model.zip`, with normalization stats at `./rl_models/best_model/best_vecnormalize.pkl`. Latest-run VecNormalize stats save to `./rl_models/vecnormalize.pkl` and replay data to `./rl_models/replay_buffer.pkl`; both are reused automatically on resume when compatible.
 
 ---
 
@@ -311,11 +337,10 @@ Checkpoints save every 10 k steps to `./rl_models/`. `best_model.zip` updates au
 
 | Artifact | Status |
 |----------|--------|
-| Latest numbered checkpoint | `rl_models/pickplace_model_580000_steps.zip` |
-| Best eval checkpoint | `rl_models/best_model.zip` and `rl_models/best_model/best_model.zip` |
+| Latest numbered checkpoint | `rl_models/pickplace_model_690000_steps.zip` |
+| Best eval checkpoint | `rl_models/best_model/best_model.zip` |
 | Latest eval file | `rl_models/evaluations.npz` |
-| Last recorded eval step | `580000` |
-| Last recorded mean eval reward | about `-7835.72` |
+| Last recorded eval step | `690000` |
 | Best recorded mean eval reward | about `-776.75` |
 
 These numbers mean training has been running and saving correctly, but the policy is **not yet consistently solving the full task**. The README now reflects that instead of overstating convergence.
@@ -330,7 +355,7 @@ The current trainer resumes from checkpoints, restores VecNormalize stats, reloa
 |--------|--------|
 | SAC → TQC | Replaced the older SAC baseline with a more stable critic ensemble |
 | Scripted pre-grasp | Deterministic base approach frees RL to focus on manipulation |
-| Caster-aware driving | Stops chassis at x ≤ 4 cm to avoid bin wall collision |
+| Caster-aware driving | Stops chassis at x ≤ 16 cm to avoid bin wall collision |
 | Arm pre-extension | Pregrasp sets shoulder/elbow/wrist to face object; EE ≤ 30 cm from target |
 | Asymmetric penalties | 3–4× harsher retreat vs approach; prevents oscillating policy |
 | Equal XY+Z weight (phase 1) | Was 0.5× XY; now 1.0× so agent approaches horizontally and vertically together |

@@ -15,7 +15,7 @@ Brings up the complete system:
 import os
 from launch import LaunchDescription
 from launch.actions import (
-    IncludeLaunchDescription, DeclareLaunchArgument, GroupAction
+    IncludeLaunchDescription, DeclareLaunchArgument, GroupAction, TimerAction
 )
 from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
@@ -45,6 +45,9 @@ def generate_launch_description():
     model_path_arg = DeclareLaunchArgument(
         'model_path', default_value='./rl_models/best_model/best_model.zip',
         description='Path to the trained RL model')
+    use_perception_arg = DeclareLaunchArgument(
+        'use_perception', default_value='true',
+        description='Use camera perception for object detection (false = fallback fixed position)')
 
     # Gazebo
     gazebo = IncludeLaunchDescription(
@@ -150,7 +153,7 @@ def generate_launch_description():
                 parameters=[{
                     'use_sim_time': True,
                     'model_path': LaunchConfiguration('model_path'),
-                    'use_perception': True
+                    'use_perception': LaunchConfiguration('use_perception')
                 }]
             )
         ]
@@ -174,16 +177,17 @@ def generate_launch_description():
         ]
     )
 
+    delayed = TimerAction(
+        period=8.0,
+        actions=[spawn_robot, bridge, perception_node, safety_guard, rl_node, nav2_group],
+    )
+
     return LaunchDescription([
         use_nav2_arg,
         use_rl_arg,
         model_path_arg,
+        use_perception_arg,
         gazebo,
         robot_state_publisher,
-        spawn_robot,
-        bridge,
-        perception_node,
-        safety_guard,
-        rl_node,
-        nav2_group,
+        delayed,
     ])
