@@ -170,6 +170,23 @@ def generate_launch_description():
         parameters=[{'use_sim_time': True}]
     )
 
+    # Controller Spawners
+    jsb_spawner = Node(
+        package='controller_manager',
+        executable='spawner',
+        arguments=['joint_state_broadcaster']
+    )
+    arm_spawner = Node(
+        package='controller_manager',
+        executable='spawner',
+        arguments=['arm_controller']
+    )
+    gripper_spawner = Node(
+        package='controller_manager',
+        executable='spawner',
+        arguments=['gripper_controller']
+    )
+
     # Manipulation RL node (optional)
     rl_node = GroupAction(
         condition=IfCondition(LaunchConfiguration('use_rl')),
@@ -208,7 +225,7 @@ def generate_launch_description():
 
     delayed = TimerAction(
         period=8.0,
-        actions=[spawn_robot, bridge, perception_node, safety_guard, rl_node, nav2_group],
+        actions=[spawn_robot, bridge, perception_node, safety_guard, rl_node, nav2_group, jsb_spawner, arm_spawner, gripper_spawner],
     )
 
     return LaunchDescription([

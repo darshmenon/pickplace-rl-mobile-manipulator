@@ -1,5 +1,4 @@
-<?xml version='1.0' encoding='utf-8'?>
-<robot name="mobile_manipulator" xmlns:xacro="http://www.ros.org/wiki/xacro">
+<robot name="mobile_manipulator">
   <material name="black">
     <color rgba="0.0 0.0 0.0 1.0" />
   </material>
@@ -45,10 +44,10 @@
       </geometry>
     </collision>
     <inertial>
-      <!-- 60kg heavy base, CoM shifted 12cm to rear to counterbalance UR3 arm -->
+      
       <origin xyz="-0.12 0 0.02" rpy="0 0 0" />
       <mass value="60.0" />
-      <!-- iyy very large to resist pitching (arm extending forward tips robot) -->
+      
       <inertia ixx="8.0" ixy="0" ixz="0" iyy="10.0" iyz="0" izz="5.0" />
     </inertial>
   </link>
@@ -117,7 +116,7 @@
     <axis xyz="0 1 0" />
   </joint>
 
-  <!-- Front Passive Caster (r=0.06 so bottom firmly contacts ground, joint at -0.02) -->
+  
   <link name="front_caster">
     <visual>
       <geometry>
@@ -147,7 +146,7 @@
     <material>Gazebo/Black</material>
   </gazebo>
 
-  <!-- Rear Passive Caster (r=0.06 so bottom firmly contacts ground, joint at -0.02) -->
+  
   <link name="rear_caster">
     <visual>
       <geometry>
@@ -795,7 +794,7 @@
     <origin rpy="0 0 0" xyz="0 0 0.005" />
   </joint>
 
-  <!-- Initial joint positions for home pose (arm standing up) -->
+  
   <gazebo reference="shoulder_lift_joint">
     <initial_position>-1.5708</initial_position>
   </gazebo>
@@ -804,51 +803,9 @@
   </gazebo>
 
   <gazebo>
-    <plugin filename="gz-sim-joint-controller-system" name="gz::sim::systems::JointController">
-      <joint_name>shoulder_pan_joint</joint_name>
-      <initial_velocity>0.0</initial_velocity>
-      <topic>/shoulder_pan_joint/cmd_vel</topic>
-      <use_force_commands>false</use_force_commands>
-    </plugin>
-    <plugin filename="gz-sim-joint-controller-system" name="gz::sim::systems::JointController">
-      <joint_name>shoulder_lift_joint</joint_name>
-      <initial_velocity>0.0</initial_velocity>
-      <topic>/shoulder_lift_joint/cmd_vel</topic>
-      <use_force_commands>false</use_force_commands>
-    </plugin>
-    <plugin filename="gz-sim-joint-controller-system" name="gz::sim::systems::JointController">
-      <joint_name>elbow_joint</joint_name>
-      <initial_velocity>0.0</initial_velocity>
-      <topic>/elbow_joint/cmd_vel</topic>
-      <use_force_commands>false</use_force_commands>
-    </plugin>
-    <plugin filename="gz-sim-joint-controller-system" name="gz::sim::systems::JointController">
-      <joint_name>wrist_1_joint</joint_name>
-      <initial_velocity>0.0</initial_velocity>
-      <topic>/wrist_1_joint/cmd_vel</topic>
-      <use_force_commands>false</use_force_commands>
-    </plugin>
-    <plugin filename="gz-sim-joint-controller-system" name="gz::sim::systems::JointController">
-      <joint_name>wrist_2_joint</joint_name>
-      <initial_velocity>0.0</initial_velocity>
-      <topic>/wrist_2_joint/cmd_vel</topic>
-      <use_force_commands>false</use_force_commands>
-    </plugin>
-    <plugin filename="gz-sim-joint-controller-system" name="gz::sim::systems::JointController">
-      <joint_name>wrist_3_joint</joint_name>
-      <initial_velocity>0.0</initial_velocity>
-      <topic>/wrist_3_joint/cmd_vel</topic>
-      <use_force_commands>false</use_force_commands>
-    </plugin>
-    <plugin filename="gz-sim-joint-controller-system" name="gz::sim::systems::JointController">
-      <joint_name>finger_joint</joint_name>
-      <initial_velocity>0.0</initial_velocity>
-      <topic>/finger_joint/cmd_vel</topic>
-      <use_force_commands>false</use_force_commands>
-    </plugin>
-  </gazebo>
+    </gazebo>
 
-  <!-- Material overrides for gz-sim Ogre2 renderer — DAE Phong colors are too dark without these -->
+  
   <gazebo reference="base_link_inertia">
     <material>
       <ambient>0.35 0.35 0.35 1</ambient>
@@ -961,4 +918,4 @@
       <specular>0.05 0.05 0.05 1</specular>
     </material>
   </gazebo>
-</robot>
+<ros2_control name="mobile_ur3" type="system"><hardware><plugin>gz_ros2_control/GazeboSimSystem</plugin></hardware><joint name="shoulder_pan_joint"><command_interface name="position" /><command_interface name="velocity" /><state_interface name="position" /><state_interface name="velocity" /></joint><joint name="shoulder_lift_joint"><command_interface name="position" /><command_interface name="velocity" /><state_interface name="position" /><state_interface name="velocity" /></joint><joint name="elbow_joint"><command_interface name="position" /><command_interface name="velocity" /><state_interface name="position" /><state_interface name="velocity" /></joint><joint name="wrist_1_joint"><command_interface name="position" /><command_interface name="velocity" /><state_interface name="position" /><state_interface name="velocity" /></joint><joint name="wrist_2_joint"><command_interface name="position" /><command_interface name="velocity" /><state_interface name="position" /><state_interface name="velocity" /></joint><joint name="wrist_3_joint"><command_interface name="position" /><command_interface name="velocity" /><state_interface name="position" /><state_interface name="velocity" /></joint><joint name="finger_joint"><command_interface name="position" /><state_interface name="position"><param name="initial_value">0.0</param></state_interface><state_interface name="velocity" /></joint></ros2_control><gazebo><plugin filename="gz_ros2_control-system" name="gz_ros2_control::GazeboSimROS2ControlPlugin"><parameters>$(find pickplace_rl_mobile)/config/ros2_controllers.yaml</parameters><ros><remapping>/controller_manager/robot_description:=/robot_description</remapping></ros></plugin></gazebo></robot>
