@@ -15,8 +15,12 @@ import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import JointState
 from geometry_msgs.msg import Twist, PoseStamped
+from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
+from builtin_interfaces.msg import Duration
 from nav_msgs.msg import Odometry
 from std_msgs.msg import Float64, String
+from control_msgs.action import GripperCommand
+from rclpy.action import ActionClient
 import json
 import os
 from stable_baselines3.common.save_util import load_from_zip_file
@@ -151,22 +155,9 @@ class ManipRLNode(Node):
 
         # --- Publishers ---
         self.cmd_vel_pub = self.create_publisher(Twist, '/cmd_vel', 10)
-        self.arm_joint_pubs = [
-            self.create_publisher(Float64, '/shoulder_pan_joint/cmd_vel', 10),
-            self.create_publisher(Float64, '/shoulder_lift_joint/cmd_vel', 10),
-            self.create_publisher(Float64, '/elbow_joint/cmd_vel', 10),
-            self.create_publisher(Float64, '/wrist_1_joint/cmd_vel', 10),
-            self.create_publisher(Float64, '/wrist_2_joint/cmd_vel', 10),
-            self.create_publisher(Float64, '/wrist_3_joint/cmd_vel', 10),
-        ]
-        self.finger_pub = self.create_publisher(Float64, '/finger_joint/cmd_vel', 10)
-        self.mimic_pubs = [
-            (
-                self.create_publisher(Float64, f'/{joint_name}/cmd_vel', 10),
-                multiplier,
-            )
-            for joint_name, multiplier in _MIMIC_MULTIPLIERS.items()
-        ]
+        self._arm_pub = self.create_publisher(JointTrajectory, '/arm_controller/joint_trajectory', 10)
+        self._grp_client = ActionClient(self, GripperCommand, '/gripper_controller/gripper_cmd')
+        
 
         # --- Subscribers ---
         self.joint_sub = self.create_subscription(
@@ -389,11 +380,24 @@ class ManipRLNode(Node):
             twist.linear.x = float(np.clip((0.16 - bx) * 3.0, 0.0, 0.2))
         self.cmd_vel_pub.publish(twist)
 
+        msg = JointTrajectory()
+        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.joint_names = _ARM_JOINT_NAMES[:4]
+        pt = JointTrajectoryPoint()
         desired = [0.0, -1.7, 2.0, -1.0]
-        for idx, (pub, target) in enumerate(zip(self.arm_joint_pubs[:4], desired)):
+        
+        target_positions = []
+        for idx, target in enumerate(desired):
             err = self._joint_error(idx, target)
             vel = np.clip(err * 2.0, -0.4, 0.4) if abs(err) > 0.05 else 0.0
-            pub.publish(Float64(data=float(vel)))
+            # dt is roughly 1/inference_rate, let's use 0.05
+            target_positions.append(float(self.joint_positions[idx] + vel * 0.05))
+            
+        pt.positions = target_positions
+        ns = max(int(0.05 * 1e9), 1)
+        pt.time_from_start = Duration(sec=ns // 1_000_000_000, nanosec=ns % 1_000_000_000)
+        msg.points = [pt]
+        self._arm_pub.publish(msg)
 
         ee_pos = self.get_end_effector_pos()
         ee_dist_xy = np.linalg.norm(ee_pos[:2] - obj_pos[:2])
@@ -483,13 +487,26 @@ class ManipRLNode(Node):
             base_linear = 0.0
             base_angular = 0.0
 
-        for pub, joint_vel in zip(self.arm_joint_pubs, joint_vels):
-            pub.publish(Float64(data=float(joint_vel)))
+        msg = JointTrajectory()
+        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.joint_names = _ARM_JOINT_NAMES
+        pt = JointTrajectoryPoint()
+        # Convert velocities to position targets based on 1 / inference_rate step duration
+        dt = 1.0 / self.get_parameter('inference_rate').value
+        target_positions = self.joint_positions[:6] + (joint_vels * dt)
+        pt.positions = [float(p) for p in target_positions]
+        ns = max(int(dt * 1e9), 1)
+        pt.time_from_start = Duration(sec=ns // 1_000_000_000, nanosec=ns % 1_000_000_000)
+        msg.points = [pt]
+        self._arm_pub.publish(msg)
 
-        gripper_vel = 0.6 if gripper_cmd > 0 else -0.6
-        self.finger_pub.publish(Float64(data=gripper_vel))
-        for pub, multiplier in self.mimic_pubs:
-            pub.publish(Float64(data=float(gripper_vel * multiplier)))
+        if self._grp_client.server_is_ready():
+            goal = GripperCommand.Goal()
+            # Map action to 0.0-0.8 range (assuming RL outputs -1 to 1)
+            mapped_pos = 0.8 if gripper_cmd > 0 else 0.0
+            goal.command.position = float(mapped_pos)
+            goal.command.max_effort = 50.0
+            self._grp_client.send_goal_async(goal)
 
         twist = Twist()
         twist.linear.x = base_linear
