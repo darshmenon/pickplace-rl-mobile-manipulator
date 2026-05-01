@@ -101,6 +101,28 @@ def generate_launch_description():
         ]
     )
 
+    # Controller Spawners
+    jsb_spawner = Node(
+        package='controller_manager',
+        executable='spawner',
+        arguments=['joint_state_broadcaster']
+    )
+    arm_spawner = Node(
+        package='controller_manager',
+        executable='spawner',
+        arguments=['arm_controller']
+    )
+    gripper_spawner = Node(
+        package='controller_manager',
+        executable='spawner',
+        arguments=['gripper_controller']
+    )
+
+    spawners = TimerAction(
+        period=8.0,
+        actions=[jsb_spawner, arm_spawner, gripper_spawner]
+    )
+
     bridge = Node(
         package='ros_gz_bridge',
         executable='parameter_bridge',
@@ -131,5 +153,6 @@ def generate_launch_description():
         gz_sim,
         robot_state_publisher,
         spawn_robot,
+        spawners,
         bridge,
     ])

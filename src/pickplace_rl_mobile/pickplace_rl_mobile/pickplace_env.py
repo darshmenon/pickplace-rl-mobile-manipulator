@@ -9,6 +9,10 @@ import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import JointState
 from geometry_msgs.msg import Twist
+from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
+from builtin_interfaces.msg import Duration
+from control_msgs.action import GripperCommand
+from rclpy.action import ActionClient
 from nav_msgs.msg import Odometry
 from std_msgs.msg import Float64
 from tf2_msgs.msg import TFMessage
@@ -125,23 +129,20 @@ class PickPlaceEnv(gym.Env):
 
         # Publishers — relative topic names are prefixed by namespace automatically
         self.cmd_vel_pub = self.node.create_publisher(Twist, 'cmd_vel', 10)
-
-        # Joint velocity publishers — topic names match URDF JointController plugin
-        self.shoulder_pub       = self.node.create_publisher(Float64, 'shoulder_pan_joint/cmd_vel', 10)
-        self.shoulder_pitch_pub = self.node.create_publisher(Float64, 'shoulder_lift_joint/cmd_vel', 10)
-        self.elbow_pub          = self.node.create_publisher(Float64, 'elbow_joint/cmd_vel', 10)
-        self.wrist_1_pub        = self.node.create_publisher(Float64, 'wrist_1_joint/cmd_vel', 10)
-        self.wrist_2_pub        = self.node.create_publisher(Float64, 'wrist_2_joint/cmd_vel', 10)
-        self.wrist_3_pub        = self.node.create_publisher(Float64, 'wrist_3_joint/cmd_vel', 10)
-        self.finger_pub         = self.node.create_publisher(Float64, 'finger_joint/cmd_vel', 10)
-
-        # Mimic joint publishers
-        self.mimic_pubs = [
-            (self.node.create_publisher(Float64, 'left_inner_knuckle_joint/cmd_vel', 10), 1.0),
-            (self.node.create_publisher(Float64, 'left_inner_finger_joint/cmd_vel', 10), -1.0),
-            (self.node.create_publisher(Float64, 'right_outer_knuckle_joint/cmd_vel', 10), -1.0),
-            (self.node.create_publisher(Float64, 'right_inner_knuckle_joint/cmd_vel', 10), 1.0),
-            (self.node.create_publisher(Float64, 'right_inner_finger_joint/cmd_vel', 10), -1.0),
+        
+        # Arm publisher
+        self._arm_pub = self.node.create_publisher(JointTrajectory, 'arm_controller/joint_trajectory', 10)
+        
+        # Gripper action client
+        self._grp_client = ActionClient(self.node, GripperCommand, 'gripper_controller/gripper_cmd')
+        
+        self._arm_joint_names = [
+            'shoulder_pan_joint',
+            'shoulder_lift_joint',
+            'elbow_joint',
+            'wrist_1_joint',
+            'wrist_2_joint',
+            'wrist_3_joint',
         ]
 
         # Subscribers
@@ -674,19 +675,25 @@ class PickPlaceEnv(gym.Env):
             base_linear_vel = float(action[7]) * 0.5
             base_angular_vel = float(action[8]) * 1.0
 
-        self.shoulder_pub.publish(Float64(data=float(joint_vels[0])))
-        self.shoulder_pitch_pub.publish(Float64(data=float(joint_vels[1])))
-        self.elbow_pub.publish(Float64(data=float(joint_vels[2])))
-        self.wrist_1_pub.publish(Float64(data=float(joint_vels[3])))
-        self.wrist_2_pub.publish(Float64(data=float(joint_vels[4])))
-        self.wrist_3_pub.publish(Float64(data=float(joint_vels[5])))
+        msg = JointTrajectory()
+        msg.header.stamp = self.node.get_clock().now().to_msg()
+        msg.joint_names = self._arm_joint_names
+        pt = JointTrajectoryPoint()
+        # step runs at approx 200Hz in training but let's command 0.05s ahead for smooth trajectory
+        dt = 0.05
+        target_positions = self.joint_positions[:6] + (joint_vels * dt)
+        pt.positions = [float(p) for p in target_positions]
+        ns = max(int(dt * 1e9), 1)
+        pt.time_from_start = Duration(sec=ns // 1_000_000_000, nanosec=ns % 1_000_000_000)
+        msg.points = [pt]
+        self._arm_pub.publish(msg)
 
-        # Close faster than we open so grasp attempts can actually reach the
-        # near-closed range before the phase logic times out.
-        gripper_vel = 1.2 if gripper_command > 0 else -0.8
-        self.finger_pub.publish(Float64(data=gripper_vel))
-        for pub, mult in self.mimic_pubs:
-            pub.publish(Float64(data=gripper_vel * mult))
+        if self._grp_client.server_is_ready():
+            goal = GripperCommand.Goal()
+            mapped_pos = 0.8 if gripper_command > 0 else 0.0
+            goal.command.position = float(mapped_pos)
+            goal.command.max_effort = 50.0
+            self._grp_client.send_goal_async(goal)
 
         twist_msg = Twist()
         twist_msg.linear.x = base_linear_vel
@@ -785,10 +792,21 @@ class PickPlaceEnv(gym.Env):
             e_vel   = np.clip(e_err   * 2.0, -0.4, 0.4) if abs(e_err)   > 0.05 else 0.0
             w1_vel  = np.clip(w1_err  * 2.0, -0.4, 0.4) if abs(w1_err)  > 0.05 else 0.0
 
-            self.shoulder_pub.publish(Float64(data=float(pan_vel)))
-            self.shoulder_pitch_pub.publish(Float64(data=float(s_vel)))
-            self.elbow_pub.publish(Float64(data=float(e_vel)))
-            self.wrist_1_pub.publish(Float64(data=float(w1_vel)))
+            msg = JointTrajectory()
+            msg.header.stamp = self.node.get_clock().now().to_msg()
+            msg.joint_names = self._arm_joint_names[:4]
+            pt = JointTrajectoryPoint()
+            target_positions = [
+                float(self.joint_positions[0] + pan_vel * 0.05),
+                float(self.joint_positions[1] + s_vel * 0.05),
+                float(self.joint_positions[2] + e_vel * 0.05),
+                float(self.joint_positions[3] + w1_vel * 0.05)
+            ]
+            pt.positions = target_positions
+            ns = max(int(0.05 * 1e9), 1)
+            pt.time_from_start = Duration(sec=ns // 1_000_000_000, nanosec=ns % 1_000_000_000)
+            msg.points = [pt]
+            self._arm_pub.publish(msg)
             rclpy.spin_once(self.node, timeout_sec=0.005)
 
         self.cmd_vel_pub.publish(Twist())
