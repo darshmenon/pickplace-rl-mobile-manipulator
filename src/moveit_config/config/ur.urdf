@@ -636,7 +636,7 @@
     <visual>
       <origin rpy="1.5707963267948966 0.0 1.5707963267948966" xyz="0 0 0"/>
       <geometry>
-        <mesh filename="file:///home/darsh/UR3_ROS2_PICK_AND_PLACE/install/ur_description/share/ur_description/meshes/d435/visual/d435.stl"/>
+        <mesh filename="package://ur_description/meshes/d435/visual/d435.stl"/>
       </geometry>
       <material name="aluminum">
         <color rgba="0.5 0.5 0.5 1"/>
@@ -819,7 +819,7 @@
   </ros2_control>
   <gazebo>
     <plugin filename="gz_ros2_control-system" name="gz_ros2_control::GazeboSimROS2ControlPlugin">
-      <parameters>/home/darsh/UR3_ROS2_PICK_AND_PLACE/install/moveit_config/share/moveit_config/config/ros2_controllers.yaml</parameters>
+      <parameters>$(find moveit_config)/config/ros2_controllers.yaml</parameters>
       <ros>
         <remapping>/controller_manager/robot_description:=/robot_description</remapping>
       </ros>
