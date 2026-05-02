@@ -12,8 +12,8 @@ from ament_index_python.packages import get_package_share_directory
 
 
 def resolve_package_uris(urdf_str):
-    """Replace package:// URIs with absolute file:// paths so Gazebo can find meshes."""
-    def replace(match):
+    """Resolve package references so Gazebo can load meshes and controller params."""
+    def replace_package_uri(match):
         pkg = match.group(1)
         rel = match.group(2)
         try:
@@ -21,7 +21,16 @@ def resolve_package_uris(urdf_str):
             return f'file://{share}/{rel}'
         except Exception:
             return match.group(0)
-    return re.sub(r'package://([^/]+)/([^"\'>\s]+)', replace, urdf_str)
+
+    def replace_find(match):
+        pkg = match.group(1)
+        try:
+            return get_package_share_directory(pkg)
+        except Exception:
+            return match.group(0)
+
+    urdf_str = re.sub(r'package://([^/]+)/([^"\'>\s]+)', replace_package_uri, urdf_str)
+    return re.sub(r'\$\(find\s+([^)]+)\)', replace_find, urdf_str)
 
 
 def get_pickplace_share_dir():
@@ -45,6 +54,8 @@ def generate_launch_description():
     urdf_path = os.path.join(pkg_dir, 'urdf', 'mobile_ur3.urdf')
     ur_description_share = get_package_share_directory('ur_description')
     robotiq_share = get_package_share_directory('robotiq_2f_85_gripper_visualization')
+    harmonic_gz_control_prefix = '/home/asimov/UR3_ROS2_PICK_AND_PLACE/install/gz_ros2_control'
+    harmonic_gz_control_lib = '/home/asimov/UR3_ROS2_PICK_AND_PLACE/install/gz_ros2_control/lib'
 
     with open(urdf_path, 'r') as f:
         raw_urdf = f.read()
@@ -59,6 +70,21 @@ def generate_launch_description():
             os.path.join(ur_description_share, '..'),
             os.path.join(robotiq_share, '..'),
         ])
+    )
+    set_gz_control_plugin_path = AppendEnvironmentVariable(
+        'GZ_SIM_SYSTEM_PLUGIN_PATH',
+        harmonic_gz_control_lib,
+        prepend=True,
+    )
+    set_gz_control_library_path = AppendEnvironmentVariable(
+        'LD_LIBRARY_PATH',
+        harmonic_gz_control_lib,
+        prepend=True,
+    )
+    set_gz_control_ament_path = AppendEnvironmentVariable(
+        'AMENT_PREFIX_PATH',
+        harmonic_gz_control_prefix,
+        prepend=True,
     )
 
     pkg_ros_gz_sim = get_package_share_directory('ros_gz_sim')
@@ -150,6 +176,9 @@ def generate_launch_description():
     return LaunchDescription([
         headless_arg,
         set_gz_resource_path,
+        set_gz_control_plugin_path,
+        set_gz_control_library_path,
+        set_gz_control_ament_path,
         gz_sim,
         robot_state_publisher,
         spawn_robot,
