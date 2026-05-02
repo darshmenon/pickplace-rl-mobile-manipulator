@@ -253,6 +253,57 @@ class PickPlaceEnv(gym.Env):
         gz = _BASE_SPAWN_Z + local_ee[2]
         return np.array([gx, gy, gz])
 
+    def _ee_world_from_joints(self, joint_angles: np.ndarray) -> np.ndarray:
+        ee_in_arm_base = ur3_fk(joint_angles[:6])
+        ee_flipped = np.array([-ee_in_arm_base[0], -ee_in_arm_base[1], ee_in_arm_base[2]])
+        local_ee = _ARM_MOUNT_XYZ + ee_flipped
+        bx, by, btheta = self.base_pose
+        return np.array([
+            bx + local_ee[0] * np.cos(btheta) - local_ee[1] * np.sin(btheta),
+            by + local_ee[0] * np.sin(btheta) + local_ee[1] * np.cos(btheta),
+            _BASE_SPAWN_Z + local_ee[2],
+        ])
+
+    def _ee_jacobian_world(self) -> np.ndarray:
+        """Numerical EE position Jacobian in world frame for stable approach assist."""
+        q = self.joint_positions[:6].astype(float).copy()
+        base_pos = self._ee_world_from_joints(q)
+        jac = np.zeros((3, 6), dtype=np.float64)
+        eps = 1e-4
+        for i in range(6):
+            q_step = q.copy()
+            q_step[i] += eps
+            jac[:, i] = (self._ee_world_from_joints(q_step) - base_pos) / eps
+        return jac
+
+    def _approach_assist_joint_vels(self) -> np.ndarray:
+        """
+        Small Cartesian pull toward the current curriculum target.
+
+        The RL action remains in charge, but this removes the dead-start problem where
+        phase 1 never reaches the object closely enough to expose phase 2 grasp rewards.
+        """
+        if self.current_phase not in [1, 2]:
+            return np.zeros(6, dtype=np.float32)
+
+        obj_pos = self.real_object_pos if self.real_object_pos is not None else self.object_pos
+        ee_pos = self.get_global_ee_pos()
+        target = obj_pos.copy()
+        if self.current_phase == 1:
+            target[2] = obj_pos[2] if obj_pos[2] > 0.02 else 0.055
+
+        error = target - ee_pos
+        error_norm = float(np.linalg.norm(error))
+        if error_norm < 0.025:
+            return np.zeros(6, dtype=np.float32)
+
+        desired_ee_vel = np.clip(error * 3.5, -0.35, 0.35)
+        jac = self._ee_jacobian_world()
+        damping = 0.04
+        jj_t = jac @ jac.T
+        joint_vels = jac.T @ np.linalg.solve(jj_t + (damping ** 2) * np.eye(3), desired_ee_vel)
+        return np.clip(joint_vels, -0.65, 0.65).astype(np.float32)
+
     def world_to_base_vector(self, vec_world: np.ndarray) -> np.ndarray:
         """Rotate a world-frame vector into the base frame using odometry yaw."""
         btheta = self.base_pose[2]
@@ -478,8 +529,10 @@ class PickPlaceEnv(gym.Env):
             if gripper_pos > 0.5:
                 reward -= 2.0
 
-            # Transition when EE is at right height and very close in XY
-            if dist_z < 0.06 and dist_xy < 0.09:
+            # Transition once the gripper is close enough for the grasp phase to
+            # finish alignment. A slightly wider gate keeps training from getting
+            # stranded in approach-only episodes.
+            if dist_z < 0.12 and dist_xy < 0.20:
                 self.current_phase = 2
                 self.prev_distance = None
                 reward += 100.0
@@ -664,8 +717,17 @@ class PickPlaceEnv(gym.Env):
         target_joints = self.joint_positions[:6] + delta
         # P-controller: velocity = (target - current) * gain, clamped to ±0.5 rad/s
         joint_vels = np.clip((target_joints - self.joint_positions[:6]) * 10.0, -0.5, 0.5)
+        approach_assist = self._approach_assist_joint_vels()
+        if self.current_phase == 1:
+            joint_vels = np.clip(approach_assist + 0.2 * joint_vels, -0.75, 0.75)
+        elif self.current_phase == 2:
+            joint_vels = np.clip(approach_assist + 0.5 * joint_vels, -0.75, 0.75)
+        if self.current_phase in [1, 2]:
+            # Wrist roll does not move the EE position; old checkpoints sometimes
+            # spin it continuously, which destabilizes Gazebo and wastes episodes.
+            joint_vels[5] = np.clip(-0.5 * self.joint_positions[5], -0.5, 0.5)
 
-        gripper_command = action[6]
+        gripper_command = -1.0 if self.current_phase == 1 else action[6]
 
         # Lock base during manipulation phases (1-3) — arm reaches from pregrasp position
         if self.current_phase in [1, 2, 3]:
@@ -676,11 +738,14 @@ class PickPlaceEnv(gym.Env):
             base_angular_vel = float(action[8]) * 1.0
 
         msg = JointTrajectory()
-        msg.header.stamp = self.node.get_clock().now().to_msg()
+        # Leave stamp at zero so ros2_control executes immediately in sim time.
+        # Stamping with wall time schedules goals far in the future under Gazebo.
         msg.joint_names = self._arm_joint_names
         pt = JointTrajectoryPoint()
-        # step runs at approx 200Hz in training but let's command 0.05s ahead for smooth trajectory
-        dt = 0.05
+        # Gazebo training often advances around 5-10 Hz, so a 50 ms target
+        # makes the arm crawl. Command farther ahead while keeping velocities
+        # clamped above for stable, visible EE motion.
+        dt = 0.20
         target_positions = self.joint_positions[:6] + (joint_vels * dt)
         pt.positions = [float(p) for p in target_positions]
         ns = max(int(dt * 1e9), 1)
@@ -771,36 +836,34 @@ class PickPlaceEnv(gym.Env):
                 tw.linear.x = 0.0
             self.cmd_vel_pub.publish(tw)
 
-            # Break once arm EE is within 0.30m XY of the object and robot is facing it
-            ee_global = self.get_global_ee_pos()
-            ee_dist_xy = np.linalg.norm(ee_global[:2] - obj_pos[:2])
-            if ee_dist_xy < 0.30 and abs(angle_err) < 0.4:
-                self.cmd_vel_pub.publish(Twist())
-                break
-
-            # Pre-grasp arm pose: extend arm forward toward the object.
-            # shoulder_pan=0 faces arm +x (chassis forward after 180° yaw flip).
-            # shoulder_lift=-1.7, elbow=2.0 extend the arm forward/down.
-            # wrist_1=-1.0 keeps gripper roughly horizontal for side-grasp.
-            pan_err = 0.0   - self.joint_positions[0]
-            s_err   = -1.7  - self.joint_positions[1]
-            e_err   =  2.0  - self.joint_positions[2]
-            w1_err  = -1.0  - self.joint_positions[3]
+            # Keep reset neutral and let the phase-1 Cartesian assist do the
+            # actual approach. This avoids stale wrist/arm states carrying over
+            # between Gazebo episodes.
+            pan_err = 0.0 - self.joint_positions[0]
+            s_err   = 0.0 - self.joint_positions[1]
+            e_err   = 0.0 - self.joint_positions[2]
+            w1_err  = 0.0 - self.joint_positions[3]
+            w2_err  = 0.0 - self.joint_positions[4]
+            w3_err  = 0.0 - self.joint_positions[5]
 
             pan_vel = np.clip(pan_err * 2.0, -0.4, 0.4) if abs(pan_err) > 0.05 else 0.0
             s_vel   = np.clip(s_err   * 2.0, -0.4, 0.4) if abs(s_err)   > 0.05 else 0.0
             e_vel   = np.clip(e_err   * 2.0, -0.4, 0.4) if abs(e_err)   > 0.05 else 0.0
             w1_vel  = np.clip(w1_err  * 2.0, -0.4, 0.4) if abs(w1_err)  > 0.05 else 0.0
+            w2_vel  = np.clip(w2_err  * 2.0, -0.4, 0.4) if abs(w2_err)  > 0.05 else 0.0
+            w3_vel  = np.clip(w3_err  * 2.0, -0.4, 0.4) if abs(w3_err)  > 0.05 else 0.0
 
             msg = JointTrajectory()
-            msg.header.stamp = self.node.get_clock().now().to_msg()
-            msg.joint_names = self._arm_joint_names[:4]
+            # Immediate execution in sim time; see step() for why this is zero.
+            msg.joint_names = self._arm_joint_names
             pt = JointTrajectoryPoint()
             target_positions = [
                 float(self.joint_positions[0] + pan_vel * 0.05),
                 float(self.joint_positions[1] + s_vel * 0.05),
                 float(self.joint_positions[2] + e_vel * 0.05),
-                float(self.joint_positions[3] + w1_vel * 0.05)
+                float(self.joint_positions[3] + w1_vel * 0.05),
+                float(self.joint_positions[4] + w2_vel * 0.05),
+                float(self.joint_positions[5] + w3_vel * 0.05),
             ]
             pt.positions = target_positions
             ns = max(int(0.05 * 1e9), 1)
@@ -808,6 +871,17 @@ class PickPlaceEnv(gym.Env):
             msg.points = [pt]
             self._arm_pub.publish(msg)
             rclpy.spin_once(self.node, timeout_sec=0.005)
+
+            # Break once the arm has actually moved into the pre-grasp pose and
+            # the robot is facing the object. Previously this could trigger at
+            # the zero joint pose, handing RL an approach state with the gripper
+            # laterally offset from the cube.
+            ee_global = self.get_global_ee_pos()
+            ee_dist_xy = np.linalg.norm(ee_global[:2] - obj_pos[:2])
+            arm_pose_err = max(abs(pan_err), abs(s_err), abs(e_err), abs(w1_err), abs(w2_err), abs(w3_err))
+            if ee_dist_xy < 0.32 and abs(angle_err) < 0.4 and arm_pose_err < 0.15:
+                self.cmd_vel_pub.publish(Twist())
+                break
 
         self.cmd_vel_pub.publish(Twist())
 
