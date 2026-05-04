@@ -31,6 +31,10 @@ _UR3_DH = [
     (0.0,      0.0819,  0.0),          # wrist_3
 ]
 
+# UR3 joint limits (rad) — clamp targets to these to prevent windup
+_UR3_JOINT_LOW  = np.array([-2*np.pi, -2*np.pi, -np.pi,    -2*np.pi, -2*np.pi, -2*np.pi])
+_UR3_JOINT_HIGH = np.array([ 2*np.pi,  2*np.pi,  np.pi,     2*np.pi,  2*np.pi,  2*np.pi])
+
 # Arm base_link offset from chassis_link (from URDF chassis_to_arm_base joint)
 _ARM_MOUNT_XYZ = np.array([0.0, 0.0, 0.1])
 
@@ -695,6 +699,10 @@ class PickPlaceEnv(gym.Env):
 
         reward -= 0.01 * np.sum(np.abs(self.joint_velocities[:6]))
 
+        # Penalise joints approaching their limits to discourage windup
+        limit_frac = np.abs(self.joint_positions[:6]) / _UR3_JOINT_HIGH
+        reward -= 2.0 * float(np.sum(np.maximum(limit_frac - 0.75, 0.0)))
+
         # During grasp phases (1-3): penalise base rotating away from object
         # so the arm stays aligned with the bin after scripted pre-grasp
         if self.current_phase in [1, 2, 3]:
@@ -753,7 +761,10 @@ class PickPlaceEnv(gym.Env):
         # makes the arm crawl. Command farther ahead while keeping velocities
         # clamped above for stable, visible EE motion.
         dt = 0.20
-        target_positions = self.joint_positions[:6] + (joint_vels * dt)
+        target_positions = np.clip(
+            self.joint_positions[:6] + (joint_vels * dt),
+            _UR3_JOINT_LOW, _UR3_JOINT_HIGH,
+        )
         pt.positions = [float(p) for p in target_positions]
         ns = max(int(dt * 1e9), 1)
         pt.time_from_start = Duration(sec=ns // 1_000_000_000, nanosec=ns % 1_000_000_000)
