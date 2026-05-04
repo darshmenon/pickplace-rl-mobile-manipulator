@@ -2,11 +2,13 @@
 
 import os
 import subprocess
+import threading
 import numpy as np
 import gymnasium as gym
 from gymnasium import spaces
 import rclpy
 from rclpy.node import Node
+from rclpy.executors import SingleThreadedExecutor
 from sensor_msgs.msg import JointState
 from geometry_msgs.msg import Twist
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
@@ -14,7 +16,6 @@ from builtin_interfaces.msg import Duration
 from control_msgs.action import GripperCommand
 from rclpy.action import ActionClient
 from nav_msgs.msg import Odometry
-from std_msgs.msg import Float64
 from tf2_msgs.msg import TFMessage
 import time
 from pickplace_rl_mobile.domain_randomizer import DomainRandomizer, RandomizationConfig
@@ -108,6 +109,13 @@ class PickPlaceEnv(gym.Env):
         # namespace is used for multi-world parallel training (e.g. 'world_0', 'world_1')
         node_name = f'pickplace_env_{namespace}' if namespace else 'pickplace_env_node'
         self.node = Node(node_name, namespace=namespace)
+
+        # Spin ROS callbacks in a background thread so joint states and odometry
+        # are always fresh — spin_once in step() was too slow to catch messages.
+        self._executor = SingleThreadedExecutor()
+        self._executor.add_node(self.node)
+        self._spin_thread = threading.Thread(target=self._executor.spin, daemon=True)
+        self._spin_thread.start()
 
         # Action space: 6 arm joints + 1 gripper + 2 base (linear, angular)
         self.action_space = spaces.Box(
@@ -708,7 +716,6 @@ class PickPlaceEnv(gym.Env):
         return reward, terminated
 
     def step(self, action):
-        rclpy.spin_once(self.node, timeout_sec=0.005)
         action = np.asarray(action, dtype=np.float32)
 
         # Position delta control: target = current + delta, then P-drive toward target.
@@ -770,13 +777,33 @@ class PickPlaceEnv(gym.Env):
             self.object_pos = ee_global.copy()
             self.object_pos[2] -= 0.05
 
-        # Let ROS process any immediately pending state updates without adding a fixed
-        # per-step sleep cost to long training runs.
-        rclpy.spin_once(self.node, timeout_sec=0.0)
+        # Give Gazebo one controller cycle (10 ms) to process the trajectory command
+        # and send back updated joint states before we read observation.
+        time.sleep(0.01)
+
         self.prev_action = action.copy()
 
         obs = self.get_observation()
         reward, terminated = self.compute_reward()
+
+        # Periodic EE-approach diagnostic (phases 1 & 2 only)
+        if self.current_phase in [1, 2] and self.episode_steps % 20 == 0:
+            ee = self.get_global_ee_pos()
+            obj = self.real_object_pos if self.real_object_pos is not None else self.object_pos
+            vec = obj - ee
+            dist = float(np.linalg.norm(vec))
+            assist = self._approach_assist_joint_vels()
+            assist_norm = float(np.linalg.norm(assist))
+            jpos = self.joint_positions[:6]
+            print(
+                f"[EE-DIAG] phase={self.current_phase} step={self.episode_steps} "
+                f"ee=({ee[0]:.3f},{ee[1]:.3f},{ee[2]:.3f}) "
+                f"obj=({obj[0]:.3f},{obj[1]:.3f},{obj[2]:.3f}) "
+                f"ee->obj=({vec[0]:.3f},{vec[1]:.3f},{vec[2]:.3f}) dist={dist:.4f} "
+                f"assist_norm={assist_norm:.4f} "
+                f"joints=({jpos[0]:.3f},{jpos[1]:.3f},{jpos[2]:.3f},{jpos[3]:.3f},{jpos[4]:.3f},{jpos[5]:.3f})",
+                flush=True,
+            )
 
         self.episode_steps += 1
         truncated = self.episode_steps >= self.max_episode_steps
@@ -813,7 +840,7 @@ class PickPlaceEnv(gym.Env):
 
         obj_pos = self.real_object_pos if self.real_object_pos is not None else self.object_pos
         for _ in range(300):
-            rclpy.spin_once(self.node, timeout_sec=0.005)
+            time.sleep(0.005)
             obj_pos = self.real_object_pos if self.real_object_pos is not None else self.object_pos
 
             bx, by, btheta = self.base_pose
@@ -870,7 +897,7 @@ class PickPlaceEnv(gym.Env):
             pt.time_from_start = Duration(sec=ns // 1_000_000_000, nanosec=ns % 1_000_000_000)
             msg.points = [pt]
             self._arm_pub.publish(msg)
-            rclpy.spin_once(self.node, timeout_sec=0.005)
+            time.sleep(0.005)
 
             # Break once the arm has actually moved into the pre-grasp pose and
             # the robot is facing the object. Previously this could trigger at
@@ -946,18 +973,17 @@ class PickPlaceEnv(gym.Env):
         if not self._joint_states_received:
             self.node.get_logger().info('Waiting for /joint_states...')
             while not self._joint_states_received:
-                rclpy.spin_once(self.node, timeout_sec=0.1)
+                time.sleep(0.1)
 
         # Scripted pre-grasp: drive base to ~25cm from object, arm tucked
         self._scripted_pregrasp()
 
-        for _ in range(10):
-            rclpy.spin_once(self.node, timeout_sec=0.005)
-            time.sleep(0.01)
+        time.sleep(0.1)
 
         return self.get_observation(), {}
 
     def close(self):
+        self._executor.shutdown()
         if rclpy.ok():
             self.node.destroy_node()
             rclpy.shutdown()
