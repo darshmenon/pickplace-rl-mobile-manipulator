@@ -219,6 +219,7 @@ class PickPlaceEnv(gym.Env):
                 randomize_observations=True,
                 randomize_actions=True,
                 randomize_object_size=True,
+                randomize_object_color=True,
                 randomize_physics=True,
             ))
             self._apply_stage_randomization(self.curriculum_stage)
@@ -1084,6 +1085,97 @@ class PickPlaceEnv(gym.Env):
             env=env, capture_output=True
         )
 
+    def _respawn_object_randomized(self, x, y, z):
+        """Delete and recreate pickup_object with randomized color, mass, size, friction.
+
+        Falls back to set_pose if the randomizer has no episode params (e.g. randomization disabled).
+        Writes a temp SDF file so the SDF string doesn't have to be shell-escaped.
+        """
+        if self.randomizer is None:
+            self._spawn_object(x, y, z)
+            return
+
+        params = self.randomizer.get_episode_params()
+        r, g, b, _ = self.randomizer.get_object_color_rgba()
+        mass = max(0.1, 0.5 + params.get('mass_noise', 0.0))
+        friction = float(np.clip(params.get('friction', 1.0) * 1.5, 0.3, 3.0))
+        size = float(np.clip(params.get('obj_size', 0.065), 0.045, 0.085))
+        # Inertia for a solid cube: I = m * side^2 / 6
+        inertia = mass * size * size / 6.0
+
+        sdf = f"""<?xml version="1.0"?>
+<sdf version="1.7">
+  <model name="pickup_object">
+    <pose>{x:.4f} {y:.4f} {z:.4f} 0 0 0</pose>
+    <link name="link">
+      <inertial>
+        <mass>{mass:.4f}</mass>
+        <inertia>
+          <ixx>{inertia:.6f}</ixx><iyy>{inertia:.6f}</iyy><izz>{inertia:.6f}</izz>
+        </inertia>
+      </inertial>
+      <velocity_decay><linear>0.5</linear><angular>1.0</angular></velocity_decay>
+      <visual name="visual">
+        <geometry><box><size>{size:.4f} {size:.4f} {size:.4f}</size></box></geometry>
+        <material>
+          <ambient>{r:.3f} {g:.3f} {b:.3f} 1</ambient>
+          <diffuse>{r:.3f} {g:.3f} {b:.3f} 1</diffuse>
+        </material>
+      </visual>
+      <collision name="collision">
+        <geometry><box><size>{size:.4f} {size:.4f} {size:.4f}</size></box></geometry>
+        <surface>
+          <friction><ode><mu>{friction:.3f}</mu><mu2>{friction:.3f}</mu2></ode></friction>
+          <contact><ode><kp>100000</kp><kd>500</kd><max_vel>0.01</max_vel><min_depth>0.001</min_depth></ode></contact>
+        </surface>
+      </collision>
+    </link>
+  </model>
+</sdf>"""
+
+        sdf_path = f'/tmp/pickup_object_{self.gz_partition or "default"}.sdf'
+        with open(sdf_path, 'w') as f:
+            f.write(sdf)
+
+        env = os.environ.copy()
+        if self.gz_partition:
+            env['GZ_PARTITION'] = self.gz_partition
+
+        # Remove existing model
+        subprocess.run(
+            ['gz', 'service', '-s', '/world/pickplace_world/remove',
+             '--reqtype', 'gz.msgs.Entity', '--reptype', 'gz.msgs.Boolean',
+             '--timeout', '2000', '--req', 'name: "pickup_object" type: 2'],
+            env=env, capture_output=True
+        )
+        time.sleep(0.1)
+
+        # Spawn new model from temp SDF file
+        subprocess.run(
+            ['gz', 'service', '-s', '/world/pickplace_world/create',
+             '--reqtype', 'gz.msgs.EntityFactory', '--reptype', 'gz.msgs.Boolean',
+             '--timeout', '3000', '--req', f'sdf_filename: "{sdf_path}"'],
+            env=env, capture_output=True
+        )
+        time.sleep(0.15)
+
+    def _randomize_gravity(self):
+        """Perturb gravity z slightly via gz set_physics service for sim-to-real transfer."""
+        if self.randomizer is None:
+            return
+        params = self.randomizer.get_episode_params()
+        gravity_z = -9.81 + float(params.get('gravity_noise', 0.0))
+        env = os.environ.copy()
+        if self.gz_partition:
+            env['GZ_PARTITION'] = self.gz_partition
+        req = f'gravity: {{x: 0 y: 0 z: {gravity_z:.4f}}}'
+        subprocess.run(
+            ['gz', 'service', '-s', '/world/pickplace_world/set_physics',
+             '--reqtype', 'gz.msgs.Physics', '--reptype', 'gz.msgs.Boolean',
+             '--timeout', '1000', '--req', req],
+            env=env, capture_output=True
+        )
+
     def reset(self, seed=None, **kwargs):
         super().reset(seed=seed)
 
@@ -1125,7 +1217,11 @@ class PickPlaceEnv(gym.Env):
         self.object_pos = self.object_start_pos.copy()
         self.real_object_pos = None
         ox, oy, oz = self.object_start_pos
-        self._spawn_object(ox, oy, oz)
+        if self.randomizer is not None:
+            self._respawn_object_randomized(ox, oy, oz)
+            self._randomize_gravity()
+        else:
+            self._spawn_object(ox, oy, oz)
 
         self.cmd_vel_pub.publish(Twist())
 
