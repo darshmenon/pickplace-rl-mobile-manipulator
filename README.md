@@ -337,13 +337,13 @@ Checkpoints save every 10 k steps to `./rl_models/`. The best eval checkpoint is
 
 | Artifact | Status |
 |----------|--------|
-| Latest numbered checkpoint | `rl_models/pickplace_model_690000_steps.zip` |
+| Latest numbered checkpoint | `rl_models/pickplace_model_935000_steps.zip` |
 | Best eval checkpoint | `rl_models/best_model/best_model.zip` |
 | Latest eval file | `rl_models/evaluations.npz` |
-| Last recorded eval step | `690000` |
-| Best recorded mean eval reward | about `-776.75` |
+| Last recorded eval step | `765000` |
+| Best recorded mean eval reward | **+2874.65** |
 
-These numbers mean training has been running and saving correctly, but the policy is **not yet consistently solving the full task**. The README now reflects that instead of overstating convergence.
+The policy has crossed into positive mean eval reward — verified grasps and lifts are occurring consistently. Full end-to-end place success (phase 5) is the remaining target.
 
 ---
 
@@ -364,6 +364,29 @@ The current trainer resumes from checkpoints, restores VecNormalize stats, reloa
 | `gradient_steps=4` | 2× more updates per env step; faster convergence |
 | Verified grasp reward +1000 | Only awarded once the real Gazebo object actually lifts |
 | Grasp verification | Real-object lift verification over a 30-step window prevents reward hacking |
+
+---
+
+## Known Issues & Roadmap
+
+### Bugs
+
+| Issue | File | Detail |
+|-------|------|--------|
+| Safety guard uses wrong joint names | `safety_guard.py` | Checks `shoulder_joint`, `elbow_joint` etc. — UR3 joints are `shoulder_pan_joint`, `shoulder_lift_joint`, `wrist_1_joint`, etc. Monitor silently does nothing. |
+| Domain randomization not applied to Gazebo | `domain_randomizer.py` | Color, mass, and gravity noise are computed per episode but never sent to Gazebo via `gz service`. Only observation noise is actually active. |
+
+### Planned Improvements
+
+| Feature | Priority | Description |
+|---------|----------|-------------|
+| Place phase reward shaping | High | Phase 5 only checks `dist < 8 cm + gripper open`. Needs proximity bonuses and guided descent reward like phases 2/3. |
+| Eval reward plot script | High | `evaluations.npz` has all data; a `plot_training.py` script would give instant visibility into training progress. |
+| Domain randomization → Gazebo | Medium | Wire `get_object_color_rgba()` and physics params into `gz service` calls at episode reset for true sim-to-real randomization. |
+| Approach assist annealing | Medium | Blend ratio in phase 2 is fixed at 0.5. Annealing to 0 over training reduces policy dependence on the scaffold. |
+| Base navigation assist (phase 4) | Medium | `_approach_assist_joint_vels` helps the arm in phases 1–2 but nothing guides the base toward the drop zone in phase 4. |
+| Running success rate metric | Low | Log rolling % of episodes that complete phase 5 — more actionable than mean reward alone. |
+| Multi-object generalization | Low | Train on varied object shapes/sizes to improve robustness beyond the single cylinder. |
 
 ---
 
