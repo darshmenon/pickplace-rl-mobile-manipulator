@@ -37,22 +37,20 @@ class SafetyGuard(Node):
         self.ee_max_reach = self.get_parameter('ee_max_reach').value
         self.workspace_radius = self.get_parameter('workspace_radius').value
 
-        # Joint limits from URDF (name -> [lower, upper])
+        # UR3 joint limits matching pickplace_env.py _UR3_JOINT_LOW/HIGH
         self.joint_limits = {
-            'shoulder_joint': [-3.14, 3.14],
-            'shoulder_pitch_joint': [-1.57, 1.57],
-            'elbow_joint': [-2.35, 2.35],
-            'wrist_roll_joint': [-3.14, 3.14],
-            'wrist_pitch_joint': [-1.57, 1.57],
-            'left_finger_joint': [-0.01, 0.03],
-            'right_finger_joint': [-0.01, 0.03],
+            'shoulder_pan_joint':  [-6.2832, 6.2832],
+            'shoulder_lift_joint': [-6.2832, 6.2832],
+            'elbow_joint':         [-3.1416, 3.1416],
+            'wrist_1_joint':       [-6.2832, 6.2832],
+            'wrist_2_joint':       [-6.2832, 6.2832],
+            'wrist_3_joint':       [-6.2832, 6.2832],
+            'finger_joint':        [0.0, 0.8],
         }
 
-        # Robot kinematics parameters (matching pickplace_env.py)
-        self.base_height = 0.2
-        self.link1_length = 0.24
-        self.link2_length = 0.24
-        self.link3_length = 0.20
+        # UR3 DH-derived kinematics constants (matching pickplace_env.py)
+        self.base_height = 0.08   # chassis spawn z
+        self.arm_mount_z = 0.10   # arm base above chassis
 
         # State
         self.joint_positions = {}
@@ -107,22 +105,41 @@ class SafetyGuard(Node):
             self.min_lidar_distance = float('inf')
 
     def compute_ee_position(self):
-        """Compute approximate end-effector position from joint states."""
-        shoulder = self.joint_positions.get('shoulder_joint', 0.0)
-        shoulder_pitch = self.joint_positions.get('shoulder_pitch_joint', 0.0)
-        elbow = self.joint_positions.get('elbow_joint', 0.0)
+        """EE position in world frame using UR3 DH FK (matches pickplace_env.py)."""
+        _DH = [
+            (0.0,      0.1519,  np.pi / 2),
+            (-0.24365, 0.0,     0.0),
+            (-0.21325, 0.0,     0.0),
+            (0.0,      0.11235, np.pi / 2),
+            (0.0,      0.08535, -np.pi / 2),
+            (0.0,      0.0819,  0.0),
+        ]
+        joint_names = [
+            'shoulder_pan_joint', 'shoulder_lift_joint', 'elbow_joint',
+            'wrist_1_joint', 'wrist_2_joint', 'wrist_3_joint',
+        ]
+        angles = np.array([self.joint_positions.get(n, 0.0) for n in joint_names])
 
-        z = self.base_height + self.link1_length
-        x_local = (self.link2_length * np.cos(shoulder_pitch) +
-                   self.link3_length * np.cos(shoulder_pitch + elbow))
-        z_local = (self.link2_length * np.sin(shoulder_pitch) +
-                   self.link3_length * np.sin(shoulder_pitch + elbow))
-
-        x = 0.1 + x_local * np.cos(shoulder)
-        y = x_local * np.sin(shoulder)
-        z = z + z_local
-
-        return np.array([x, y, z])
+        T = np.eye(4)
+        for i, (a, d, alpha) in enumerate(_DH):
+            ct, st = np.cos(angles[i]), np.sin(angles[i])
+            ca, sa = np.cos(alpha), np.sin(alpha)
+            T = T @ np.array([
+                [ct, -st * ca,  st * sa, a * ct],
+                [st,  ct * ca, -ct * sa, a * st],
+                [0.,       sa,      ca,       d],
+                [0.,       0.,      0.,      1.],
+            ])
+        ee_arm = T[:3, 3]
+        # 180° yaw on base_link_inertia: flip x,y then add mount offset
+        ee_local = np.array([-ee_arm[0], -ee_arm[1], ee_arm[2]]) + np.array([0., 0., 0.10])
+        # World frame via odometry yaw
+        bx, by, btheta = self.base_pose
+        return np.array([
+            bx + ee_local[0] * np.cos(btheta) - ee_local[1] * np.sin(btheta),
+            by + ee_local[0] * np.sin(btheta) + ee_local[1] * np.cos(btheta),
+            self.base_height + ee_local[2],
+        ])
 
     def check_joint_limits(self):
         """Check if any joints are near their limits."""
