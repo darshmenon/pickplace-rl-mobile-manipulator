@@ -367,26 +367,18 @@ The current trainer resumes from checkpoints, restores VecNormalize stats, reloa
 
 ---
 
-## Known Issues & Roadmap
+## Roadmap
 
-### Bugs
-
-| Issue | File | Detail |
-|-------|------|--------|
-| Safety guard uses wrong joint names | `safety_guard.py` | Checks `shoulder_joint`, `elbow_joint` etc. — UR3 joints are `shoulder_pan_joint`, `shoulder_lift_joint`, `wrist_1_joint`, etc. Monitor silently does nothing. |
-| Domain randomization not applied to Gazebo | `domain_randomizer.py` | Color, mass, and gravity noise are computed per episode but never sent to Gazebo via `gz service`. Only observation noise is actually active. |
-
-### Planned Improvements
-
-| Feature | Priority | Description |
-|---------|----------|-------------|
-| Place phase reward shaping | High | Phase 5 only checks `dist < 8 cm + gripper open`. Needs proximity bonuses and guided descent reward like phases 2/3. |
-| Eval reward plot script | High | `evaluations.npz` has all data; a `plot_training.py` script would give instant visibility into training progress. |
-| Domain randomization → Gazebo | Medium | Wire `get_object_color_rgba()` and physics params into `gz service` calls at episode reset for true sim-to-real randomization. |
-| Approach assist annealing | Medium | Blend ratio in phase 2 is fixed at 0.5. Annealing to 0 over training reduces policy dependence on the scaffold. |
-| Base navigation assist (phase 4) | Medium | `_approach_assist_joint_vels` helps the arm in phases 1–2 but nothing guides the base toward the drop zone in phase 4. |
-| Running success rate metric | Low | Log rolling % of episodes that complete phase 5 — more actionable than mean reward alone. |
-| Multi-object generalization | Low | Train on varied object shapes/sizes to improve robustness beyond the single cylinder. |
+| Feature | Status | Description |
+|---------|--------|-------------|
+| Safety guard joint names | Done | Fixed to match UR3 (`shoulder_pan_joint`, etc.) with real DH FK |
+| Eval reward plot script | Done | `python3 plot_training.py` — reward curves + episode length |
+| Place phase reward shaping | Done | Phase 5 now has proximity bonuses, alignment bonuses, early-drop penalty |
+| Approach assist annealing | Done | Assist blend decays 1.0 → 0 over 600k steps |
+| Base navigation assist (phase 4) | Done | Gentle base nudge toward drop zone, also annealed |
+| Running success rate metric | Done | Rolling 100-episode success rate logged to `monitor.csv` and `info` |
+| Domain randomization → Gazebo | Done | Object respawned each episode with randomized color, mass, size, friction; gravity perturbed via `set_physics` |
+| Multi-object generalization | Planned | Train on varied object shapes/sizes beyond the single cube |
 
 ---
 
