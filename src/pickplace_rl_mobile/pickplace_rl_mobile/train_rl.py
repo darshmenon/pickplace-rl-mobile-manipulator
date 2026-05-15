@@ -198,6 +198,8 @@ def make_env(
             'dist_to_obj',
             'finger_joint',
             'is_success',
+            'success_rate',
+            'assist_scale',
             'curriculum_stage',
             'curriculum_target_phase',
             'stage_success',
