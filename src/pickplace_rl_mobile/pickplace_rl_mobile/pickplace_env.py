@@ -204,6 +204,8 @@ class PickPlaceEnv(gym.Env):
         self.current_phase = 0
         self.prev_distance = None
         self.prev_action = np.zeros(self.action_space.shape[0], dtype=np.float32)
+        self._global_steps = 0  # total env steps across all episodes, used for assist annealing
+        self._success_history = []  # rolling window for success rate logging
         self.randomizer = None
         if self.enable_domain_randomization:
             self.randomizer = DomainRandomizer(RandomizationConfig(
@@ -375,6 +377,39 @@ class PickPlaceEnv(gym.Env):
         jj_t = jac @ jac.T
         joint_vels = jac.T @ np.linalg.solve(jj_t + (damping ** 2) * np.eye(3), desired_ee_vel)
         return np.clip(joint_vels, -0.65, 0.65).astype(np.float32)
+
+    def _transport_assist_base_vels(self) -> tuple[float, float]:
+        """Gentle base guidance toward target during phase 4 transport.
+
+        Returns (linear, angular) velocity assists in [-1, 1] scale (pre-scaling).
+        Anneals to zero over the same 600k-step window as approach assist.
+        """
+        if self.current_phase != 4:
+            return 0.0, 0.0
+        _ANNEAL_STEPS = 600_000
+        assist_scale = max(0.0, 1.0 - self._global_steps / _ANNEAL_STEPS)
+        if assist_scale < 0.05:
+            return 0.0, 0.0
+
+        bx, by, btheta = self.base_pose
+        tx, ty = self.target_pos[:2]
+        dx, dy = tx - bx, ty - by
+        dist = float(np.hypot(dx, dy))
+        if dist < 0.10:
+            return 0.0, 0.0
+
+        desired_angle = float(np.arctan2(dy, dx))
+        angle_err = desired_angle - btheta
+        while angle_err > np.pi:  angle_err -= 2 * np.pi
+        while angle_err < -np.pi: angle_err += 2 * np.pi
+
+        # Turn first if badly misaligned, otherwise drive forward
+        if abs(angle_err) > 0.4:
+            angular = np.clip(angle_err * 1.5, -0.8, 0.8) * assist_scale
+            return 0.0, float(angular)
+        linear = np.clip(dist * 1.0, 0.0, 0.6) * assist_scale
+        angular = np.clip(angle_err * 2.0, -0.5, 0.5) * assist_scale
+        return float(linear), float(angular)
 
     def world_to_base_vector(self, vec_world: np.ndarray) -> np.ndarray:
         """Rotate a world-frame vector into the base frame using odometry yaw."""
@@ -757,9 +792,33 @@ class PickPlaceEnv(gym.Env):
 
         elif self.current_phase == 5:
             dist = np.linalg.norm(ee_global - self.target_pos)
+            dist_xy = np.linalg.norm(ee_global[:2] - self.target_pos[:2])
+            dist_z = abs(ee_global[2] - self.target_pos[2])
+
+            # Dense approach reward
             if self.prev_distance is not None:
-                reward += (self.prev_distance - dist) * 50.0
+                delta = self.prev_distance - dist
+                reward += delta * 100.0 if delta > 0 else delta * 200.0
             self.prev_distance = dist
+
+            # Proximity bonuses — mirror phase 2 structure
+            if dist < 0.15:
+                reward += 8.0 * (1.0 - dist / 0.15)
+            if dist_xy < 0.08:
+                reward += 10.0 * (1.0 - dist_xy / 0.08)
+            if dist_z < 0.05:
+                reward += 8.0 * (1.0 - dist_z / 0.05)
+            if dist_xy < 0.06 and dist_z < 0.04:
+                reward += 12.0  # dual-align bonus
+
+            # Reward opening gripper only when correctly positioned
+            if gripper_pos < 0.3 and dist < 0.10:
+                reward += 10.0 * (1.0 - gripper_pos / 0.3)
+
+            # Penalise dropping early (opening while still far from target)
+            if gripper_pos < 0.3 and dist > 0.15:
+                reward -= 15.0
+
             if dist < 0.08 and gripper_pos < 0.1:
                 self.object_grasped = False
                 self.grasp_verified = False
@@ -803,10 +862,14 @@ class PickPlaceEnv(gym.Env):
         # P-controller: velocity = (target - current) * gain, clamped to ±0.5 rad/s
         joint_vels = np.clip((target_joints - self.joint_positions[:6]) * 10.0, -0.5, 0.5)
         approach_assist = self._approach_assist_joint_vels()
+        # Anneal assist blend from full (1.0) to zero over 600k steps so the policy
+        # becomes self-sufficient as training matures.
+        _ANNEAL_STEPS = 600_000
+        assist_scale = max(0.0, 1.0 - self._global_steps / _ANNEAL_STEPS)
         if self.current_phase == 1:
-            joint_vels = np.clip(approach_assist + 0.2 * joint_vels, -0.75, 0.75)
+            joint_vels = np.clip(assist_scale * approach_assist + 0.2 * joint_vels, -0.75, 0.75)
         elif self.current_phase == 2:
-            joint_vels = np.clip(approach_assist + 0.5 * joint_vels, -0.75, 0.75)
+            joint_vels = np.clip(assist_scale * approach_assist + 0.5 * joint_vels, -0.75, 0.75)
         if self.current_phase in [1, 2]:
             # Wrist roll does not move the EE position; old checkpoints sometimes
             # spin it continuously, which destabilizes Gazebo and wastes episodes.
@@ -821,6 +884,10 @@ class PickPlaceEnv(gym.Env):
         else:
             base_linear_vel = float(action[7]) * 0.5
             base_angular_vel = float(action[8]) * 1.0
+            # Phase 4: blend in transport assist so the base learns to drive to target
+            assist_lin, assist_ang = self._transport_assist_base_vels()
+            base_linear_vel = float(np.clip(base_linear_vel + assist_lin * 0.5, -0.5, 0.5))
+            base_angular_vel = float(np.clip(base_angular_vel + assist_ang * 1.0, -1.0, 1.0))
 
         msg = JointTrajectory()
         # Leave stamp at zero so ros2_control executes immediately in sim time.
@@ -887,8 +954,16 @@ class PickPlaceEnv(gym.Env):
             )
 
         self.episode_steps += 1
+        self._global_steps += 1
         truncated = self.episode_steps >= self.max_episode_steps
         self.max_phase_reached = max(self.max_phase_reached, self.current_phase)
+
+        # Rolling success rate over last 100 episodes
+        if terminated or truncated:
+            self._success_history.append(1 if self.episode_success else 0)
+            if len(self._success_history) > 100:
+                self._success_history.pop(0)
+        rolling_success_rate = float(sum(self._success_history)) / max(len(self._success_history), 1)
 
         info = {
             'phase': int(self.current_phase),
@@ -902,6 +977,9 @@ class PickPlaceEnv(gym.Env):
             'dist_to_obj': float(self.last_dist_to_obj),
             'finger_joint': float(self.get_joint_position('finger_joint', self.joint_positions[6])),
             'is_success': bool(self.episode_success),
+            'success_rate': rolling_success_rate,
+            'global_steps': int(self._global_steps),
+            'assist_scale': float(max(0.0, 1.0 - self._global_steps / 600_000)),
             'curriculum_stage': int(self.curriculum_stage),
             'curriculum_target_phase': int(self.curriculum_target_phase()),
             'stage_success': bool(self.stage_success),
