@@ -378,7 +378,8 @@ The current trainer resumes from checkpoints, restores VecNormalize stats, reloa
 | Base navigation assist (phase 4) | Done | Gentle base nudge toward drop zone, also annealed |
 | Running success rate metric | Done | Rolling 100-episode success rate logged to `monitor.csv` and `info` |
 | Domain randomization → Gazebo | Done | Object respawned each episode with randomized color, mass, size, friction; gravity perturbed via `set_physics` |
-| Multi-object generalization | Planned | Train on varied object shapes/sizes beyond the single cube |
+| Multi-object generalization | Done | Box, cylinder, and sphere spawned per episode with per-shape inertia; curriculum thresholds adjusted for added difficulty |
+| Success rate plot | Done | `plot_training.py` now shows rolling success rate from monitor CSVs as a third panel |
 
 ---
 
