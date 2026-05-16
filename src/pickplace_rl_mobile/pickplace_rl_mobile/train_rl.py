@@ -429,7 +429,7 @@ def main():
                         help='Number of parallel Gazebo worlds (default: 1)')
     parser.add_argument('--load-model', type=str, default=None,
                         help='Path to a saved model to resume training (default: None)')
-    parser.add_argument('--curriculum-stage', type=int, default=0,
+    parser.add_argument('--curriculum-stage', type=int, default=1,
                         help='Curriculum stage: 0=full, 1=reach, 2=grasp, 3=lift, 4=transport, 5=place')
 
     args, unknown = parser.parse_known_args()

@@ -39,6 +39,10 @@ _UR3_JOINT_HIGH = np.array([ 2*np.pi,  2*np.pi,  np.pi,     2*np.pi,  2*np.pi,  
 # Arm base_link offset from chassis_link (from URDF chassis_to_arm_base joint)
 _ARM_MOUNT_XYZ = np.array([0.0, 0.0, 0.1])
 
+# Approach-assist annealing horizon — assist blends from 1.0 → 0 over this many steps.
+# Long enough that the policy can reliably grasp before flying solo.
+_ANNEAL_STEPS = 1_000_000
+
 # Robot spawn height (chassis z at spawn)
 _BASE_SPAWN_Z = 0.08
 
@@ -383,11 +387,10 @@ class PickPlaceEnv(gym.Env):
         """Gentle base guidance toward target during phase 4 transport.
 
         Returns (linear, angular) velocity assists in [-1, 1] scale (pre-scaling).
-        Anneals to zero over the same 600k-step window as approach assist.
+        Anneals to zero over the same window as approach assist.
         """
         if self.current_phase != 4:
             return 0.0, 0.0
-        _ANNEAL_STEPS = 600_000
         assist_scale = max(0.0, 1.0 - self._global_steps / _ANNEAL_STEPS)
         if assist_scale < 0.05:
             return 0.0, 0.0
@@ -440,7 +443,7 @@ class PickPlaceEnv(gym.Env):
     def episode_step_limit(self) -> int:
         """Shorter early-stage episodes improve reset rate and sample efficiency."""
         limits = {
-            0: 1000,  # full task
+            0: 1500,  # full task — scripted pregrasp takes ~300 steps, need room for all 5 phases
             1: 150,   # reach/alignment only
             2: 250,   # grasp attempts
             3: 350,   # verified grasp + lift
@@ -698,7 +701,7 @@ class PickPlaceEnv(gym.Env):
 
             # A close, closed gripper starts a lift attempt. The large grasp
             # reward is withheld until the real Gazebo object actually rises.
-            if gripper_pos > 0.7 and xy_dist < 0.05 and z_dist < 0.04:
+            if gripper_pos > 0.7 and xy_dist < 0.07 and z_dist < 0.06:
                 self.object_grasped = True
                 self.grasp_verified = False
                 self.current_phase = 3
@@ -752,7 +755,7 @@ class PickPlaceEnv(gym.Env):
                 self.object_grasped = False
                 self.current_phase = 2
                 self.prev_distance = None
-                return reward - 250.0, False
+                return reward - 50.0, False
             dist_z = abs(ee_global[2] - 0.25)
             if self.prev_distance is not None:
                 delta = self.prev_distance - dist_z
@@ -865,7 +868,6 @@ class PickPlaceEnv(gym.Env):
         approach_assist = self._approach_assist_joint_vels()
         # Anneal assist blend from full (1.0) to zero over 600k steps so the policy
         # becomes self-sufficient as training matures.
-        _ANNEAL_STEPS = 600_000
         assist_scale = max(0.0, 1.0 - self._global_steps / _ANNEAL_STEPS)
         if self.current_phase == 1:
             joint_vels = np.clip(assist_scale * approach_assist + 0.2 * joint_vels, -0.75, 0.75)
@@ -980,7 +982,7 @@ class PickPlaceEnv(gym.Env):
             'is_success': bool(self.episode_success),
             'success_rate': rolling_success_rate,
             'global_steps': int(self._global_steps),
-            'assist_scale': float(max(0.0, 1.0 - self._global_steps / 600_000)),
+            'assist_scale': float(max(0.0, 1.0 - self._global_steps / _ANNEAL_STEPS)),
             'curriculum_stage': int(self.curriculum_stage),
             'curriculum_target_phase': int(self.curriculum_target_phase()),
             'stage_success': bool(self.stage_success),
