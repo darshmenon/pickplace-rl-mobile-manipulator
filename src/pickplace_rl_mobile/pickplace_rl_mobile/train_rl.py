@@ -64,20 +64,21 @@ class EntropyDecayCallback(BaseCallback):
 class CurriculumCallback(BaseCallback):
     """Advance or revert staged curricula based on evaluation results."""
 
-    # Lowered from (50/250/600/900) to account for wider domain randomization.
+    # Lowered from (50/250/600/900) → (30/150/400/700) for domain randomization,
+    # then further reduced to account for multi-shape generalization difficulty.
     ADVANCE_THRESHOLDS = {
-        1: 30.0,
-        2: 150.0,
-        3: 400.0,
-        4: 700.0,
+        1: 25.0,
+        2: 120.0,
+        3: 350.0,
+        4: 600.0,
     }
 
     # Revert to previous stage if reward falls this far below advance threshold.
     REVERT_THRESHOLDS = {
-        2: 80.0,
-        3: 250.0,
-        4: 550.0,
-        5: 800.0,
+        2: 60.0,
+        3: 200.0,
+        4: 450.0,
+        5: 700.0,
     }
 
     def __init__(self, eval_callback: EvalCallback, eval_env, starting_stage: int):
