@@ -53,12 +53,16 @@ class RandomizationConfig:
     # Gravity noise
     gravity_noise_std: float = 0.02  # m/s^2
 
+    # Object shape randomization
+    object_shapes: Tuple[str, ...] = ('box', 'cylinder', 'sphere')
+    randomize_object_shape: bool = True
+
     # Enable flags
     randomize_object_pos: bool = True
-    randomize_object_size: bool = False
-    randomize_object_color: bool = False
-    randomize_target_pos: bool = False
-    randomize_physics: bool = False
+    randomize_object_size: bool = True
+    randomize_object_color: bool = True
+    randomize_target_pos: bool = True
+    randomize_physics: bool = True
     randomize_observations: bool = True
     randomize_actions: bool = False
 
@@ -115,6 +119,11 @@ class DomainRandomizer:
         else:
             mass_noise, friction, gravity_noise = 0.0, 1.0, 0.0
 
+        if cfg.randomize_object_shape and len(cfg.object_shapes) > 1:
+            shape = cfg.object_shapes[self.rng.integers(len(cfg.object_shapes))]
+        else:
+            shape = cfg.object_shapes[0] if cfg.object_shapes else 'box'
+
         self.current_episode_params = {
             'obj_scale': scale,
             'obj_size': cfg.nominal_obj_size * scale,
@@ -124,6 +133,7 @@ class DomainRandomizer:
             'mass_noise': mass_noise,
             'friction': friction,
             'gravity_noise': gravity_noise,
+            'shape': shape,
         }
 
     def randomize_object_position(self) -> np.ndarray:

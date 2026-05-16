@@ -1105,6 +1105,35 @@ class PickPlaceEnv(gym.Env):
         # Inertia for a solid cube: I = m * side^2 / 6
         inertia = mass * size * size / 6.0
 
+        shape = params.get('shape', 'box')
+        rad = size / 2.0
+        if shape == 'cylinder':
+            # Solid cylinder standing upright: radius=size/2, height=size
+            ixx = mass * (3 * rad * rad + size * size) / 12.0
+            izz = mass * rad * rad / 2.0
+            geom = (
+                f'<cylinder><radius>{rad:.4f}</radius>'
+                f'<length>{size:.4f}</length></cylinder>'
+            )
+            inertia_xml = (
+                f'<ixx>{ixx:.6f}</ixx><iyy>{ixx:.6f}</iyy><izz>{izz:.6f}</izz>'
+            )
+        elif shape == 'sphere':
+            # Solid sphere: radius=size/2
+            isph = 2.0 * mass * rad * rad / 5.0
+            geom = f'<sphere><radius>{rad:.4f}</radius></sphere>'
+            inertia_xml = (
+                f'<ixx>{isph:.6f}</ixx><iyy>{isph:.6f}</iyy><izz>{isph:.6f}</izz>'
+            )
+        else:
+            geom = (
+                f'<box><size>{size:.4f} {size:.4f} {size:.4f}</size></box>'
+            )
+            inertia_xml = (
+                f'<ixx>{inertia:.6f}</ixx><iyy>{inertia:.6f}</iyy>'
+                f'<izz>{inertia:.6f}</izz>'
+            )
+
         sdf = f"""<?xml version="1.0"?>
 <sdf version="1.7">
   <model name="pickup_object">
@@ -1112,20 +1141,18 @@ class PickPlaceEnv(gym.Env):
     <link name="link">
       <inertial>
         <mass>{mass:.4f}</mass>
-        <inertia>
-          <ixx>{inertia:.6f}</ixx><iyy>{inertia:.6f}</iyy><izz>{inertia:.6f}</izz>
-        </inertia>
+        <inertia>{inertia_xml}</inertia>
       </inertial>
       <velocity_decay><linear>0.5</linear><angular>1.0</angular></velocity_decay>
       <visual name="visual">
-        <geometry><box><size>{size:.4f} {size:.4f} {size:.4f}</size></box></geometry>
+        <geometry>{geom}</geometry>
         <material>
           <ambient>{r:.3f} {g:.3f} {b:.3f} 1</ambient>
           <diffuse>{r:.3f} {g:.3f} {b:.3f} 1</diffuse>
         </material>
       </visual>
       <collision name="collision">
-        <geometry><box><size>{size:.4f} {size:.4f} {size:.4f}</size></box></geometry>
+        <geometry>{geom}</geometry>
         <surface>
           <friction><ode><mu>{friction:.3f}</mu><mu2>{friction:.3f}</mu2></ode></friction>
           <contact><ode><kp>100000</kp><kd>500</kd><max_vel>0.01</max_vel><min_depth>0.001</min_depth></ode></contact>
