@@ -701,14 +701,16 @@ class PickPlaceEnv(gym.Env):
 
             # A close, closed gripper starts a lift attempt. The large grasp
             # reward is withheld until the real Gazebo object actually rises.
-            if gripper_pos > 0.7 and xy_dist < 0.07 and z_dist < 0.06:
+            # Tighter xy/z thresholds ensure the EE is physically at the object
+            # surface before claiming a grasp (prevents phantom-grasp cycles).
+            if gripper_pos > 0.7 and xy_dist < 0.05 and z_dist < 0.04:
                 self.object_grasped = True
                 self.grasp_verified = False
                 self.current_phase = 3
                 self.grasp_verify_steps = 0
                 self.prev_distance = None
                 self.grasp_attempts += 1
-                reward += 50.0
+                reward += 100.0
             elif gripper_pos > 0.7 and dist_to_obj >= 0.08:
                 # Penalty scales with distance: closing far away = much worse than closing nearby
                 reward -= 0.5 + dist_to_obj * 5.0
@@ -722,9 +724,17 @@ class PickPlaceEnv(gym.Env):
             # Penalise opening gripper while lifting — object will fall
             if gripper_pos < 0.3:
                 reward -= 20.0
-            # EE should be rising during lift; penalise staying near ground
-            if ee_global[2] < 0.10:
-                reward -= 8.0 * (1.0 - ee_global[2] / 0.10)
+            # EE should be rising; penalise staying at or below grasp height.
+            # Raised threshold to 0.16m (just above grasp z of ~0.13m) so the
+            # policy is pushed upward immediately on entering the lift phase.
+            if ee_global[2] < 0.16:
+                reward -= 12.0 * (1.0 - ee_global[2] / 0.16)
+
+            # Direct upward reward: bonus proportional to EE height above grasp z.
+            # Gives an immediate gradient to climb even before the object rises.
+            ee_height_above_grasp = ee_global[2] - float(self.object_start_pos[2])
+            if ee_height_above_grasp > 0:
+                reward += 15.0 * min(ee_height_above_grasp / 0.12, 1.0)
 
             # Verify grasp: real object should rise with EE; if it stays on the floor, abort.
             # grasp_verify_steps increments unconditionally so the timeout fires even
@@ -732,8 +742,8 @@ class PickPlaceEnv(gym.Env):
             self.grasp_verify_steps += 1
             if self.real_object_pos is not None:
                 obj_xy_err = np.linalg.norm(self.real_object_pos[:2] - ee_global[:2])
-                # Object must rise at least 5cm above its spawn z to confirm a real lift.
-                lift_z = float(self.object_start_pos[2]) + 0.05
+                # Object must rise at least 3cm above its spawn z to confirm a real lift.
+                lift_z = float(self.object_start_pos[2]) + 0.03
                 if self.real_object_pos[2] >= lift_z:
                     if not self.grasp_verified:
                         self.grasp_verified = True
@@ -743,12 +753,12 @@ class PickPlaceEnv(gym.Env):
             else:
                 # Fallback when the Gazebo pose bridge isn't delivering data:
                 # if EE is high and gripper closed, assume object was carried up.
-                if ee_global[2] >= 0.20 and gripper_pos > 0.65:
+                if ee_global[2] >= 0.18 and gripper_pos > 0.65:
                     if not self.grasp_verified:
                         self.grasp_verified = True
                         self.verified_grasps += 1
                         reward += 1000.0
-            if not self.grasp_verified and self.grasp_verify_steps > 50:
+            if not self.grasp_verified and self.grasp_verify_steps > 80:
                 # Object didn't lift within the verify window — grasp failed, back to phase 2.
                 # Return immediately so the rest of the phase-3 block (lift tracking,
                 # prev_distance update) does not overwrite phase-2 state.
