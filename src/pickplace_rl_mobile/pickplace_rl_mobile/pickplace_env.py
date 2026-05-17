@@ -36,6 +36,9 @@ _UR3_DH = [
 _UR3_JOINT_LOW  = np.array([-2*np.pi, -2*np.pi, -np.pi,    -2*np.pi, -2*np.pi, -2*np.pi])
 _UR3_JOINT_HIGH = np.array([ 2*np.pi,  2*np.pi,  np.pi,     2*np.pi,  2*np.pi,  2*np.pi])
 
+# Height of the platform surface the pickup object rests on (m)
+_PLATFORM_TOP = 0.10
+
 # Arm base_link offset from chassis_link (from URDF chassis_to_arm_base joint)
 _ARM_MOUNT_XYZ = np.array([0.0, 0.0, 0.1])
 
@@ -1114,6 +1117,7 @@ class PickPlaceEnv(gym.Env):
         mass = max(0.1, 0.5 + params.get('mass_noise', 0.0))
         friction = float(np.clip(params.get('friction', 1.0) * 1.5, 0.3, 3.0))
         size = float(np.clip(params.get('obj_size', 0.065), 0.045, 0.085))
+        z = _PLATFORM_TOP + size / 2.0
         # Inertia for a solid cube: I = m * side^2 / 6
         inertia = mass * size * size / 6.0
 
@@ -1199,6 +1203,7 @@ class PickPlaceEnv(gym.Env):
             env=env, capture_output=True
         )
         time.sleep(0.15)
+        return z
 
     def _randomize_gravity(self):
         """Perturb gravity z slightly via gz set_physics service for sim-to-real transfer."""
@@ -1259,7 +1264,9 @@ class PickPlaceEnv(gym.Env):
         self.real_object_pos = None
         ox, oy, oz = self.object_start_pos
         if self.randomizer is not None:
-            self._respawn_object_randomized(ox, oy, oz)
+            oz = self._respawn_object_randomized(ox, oy, oz)
+            self.object_start_pos[2] = oz
+            self.object_pos[2] = oz
             self._randomize_gravity()
         else:
             self._spawn_object(ox, oy, oz)
