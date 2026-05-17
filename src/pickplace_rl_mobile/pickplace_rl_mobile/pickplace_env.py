@@ -868,6 +868,8 @@ class PickPlaceEnv(gym.Env):
 
     def step(self, action):
         action = np.asarray(action, dtype=np.float32)
+        if self.randomizer is not None:
+            action = self.randomizer.add_action_noise(action)
 
         # Position delta control: target = current + delta, then P-drive toward target.
         # Max delta per step = 0.25 rad → faster reach toward object.
