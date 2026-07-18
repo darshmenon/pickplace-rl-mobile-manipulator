@@ -4,6 +4,14 @@ import argparse
 import math
 import os
 import torch
+
+# torch.optim.Adam lazily imports torch._dynamo (and transitively triton) on
+# construction. If that first happens after TensorFlow is loaded (sb3_contrib
+# pulls it in transitively), triton's bundled LLVM collides with TensorFlow's
+# and segfaults on import. Constructing a throwaway Adam here forces that
+# import to happen first, while the process is still TF-free.
+torch.optim.Adam(torch.nn.Linear(1, 1).parameters())
+
 from sb3_contrib import TQC
 from stable_baselines3.common.save_util import load_from_zip_file
 from stable_baselines3.common.callbacks import CheckpointCallback, EvalCallback, BaseCallback
@@ -176,6 +184,7 @@ def make_env(
     curriculum_stage=0,
     observation_mode='full',
     enable_domain_randomization=True,
+    enable_assist=True,
 ):
     """Factory that returns a thunk creating a monitored PickPlaceEnv."""
     def _init():
@@ -185,6 +194,7 @@ def make_env(
             curriculum_stage=curriculum_stage,
             observation_mode=observation_mode,
             enable_domain_randomization=enable_domain_randomization,
+            enable_assist=enable_assist,
         )
         # Log additional info metrics in monitor.csv
         kw = (
@@ -246,12 +256,14 @@ def train(total_timesteps=500000, save_dir='./models', n_envs=1, load_model=None
     if n_envs > 1:
         raw_env = SubprocVecEnv([
             make_env(
-                     monitor_path=os.path.join(monitor_dir, f'train_env_{i}.monitor.csv'),
-                     ros_domain_id=_MULTI_WORLD_BASE_DOMAIN + i,
-                     gz_partition=f'sim_{i}',
-                     curriculum_stage=curriculum_stage,
-                     observation_mode=observation_mode,
-                     enable_domain_randomization=True)
+                monitor_path=os.path.join(monitor_dir, f'train_env_{i}.monitor.csv'),
+                ros_domain_id=_MULTI_WORLD_BASE_DOMAIN + i,
+                gz_partition=f'sim_{i}',
+                curriculum_stage=curriculum_stage,
+                observation_mode=observation_mode,
+                enable_domain_randomization=True,
+                enable_assist=True,
+            )
             for i in range(n_envs)
         ])
     else:
@@ -263,6 +275,7 @@ def train(total_timesteps=500000, save_dir='./models', n_envs=1, load_model=None
                 curriculum_stage=curriculum_stage,
                 observation_mode=observation_mode,
                 enable_domain_randomization=True,
+                enable_assist=True,
             )
         ])
 
@@ -281,6 +294,7 @@ def train(total_timesteps=500000, save_dir='./models', n_envs=1, load_model=None
                 curriculum_stage=curriculum_stage,
                 observation_mode=observation_mode,
                 enable_domain_randomization=False,
+                enable_assist=False,
             )
         ])
     else:
@@ -294,6 +308,7 @@ def train(total_timesteps=500000, save_dir='./models', n_envs=1, load_model=None
                 curriculum_stage=curriculum_stage,
                 observation_mode=observation_mode,
                 enable_domain_randomization=False,
+                enable_assist=False,
             )
         ])
     if load_model and resume_vecnorm_path:
@@ -327,7 +342,7 @@ def train(total_timesteps=500000, save_dir='./models', n_envs=1, load_model=None
     )
 
     # 3-layer 512-unit network: bigger than default [256,256] to capture
-    # the complex mapping from 24-dim obs to 9-dim continuous actions.
+    # the complex mapping from 46-dim obs to 9-dim continuous actions.
     policy_kwargs = dict(net_arch=[512, 512, 512])
 
     if load_model:
@@ -389,7 +404,7 @@ def train(total_timesteps=500000, save_dir='./models', n_envs=1, load_model=None
             tau=0.005,
             gamma=0.99,
             train_freq=1,
-            gradient_steps=2,
+            gradient_steps=4,
             top_quantiles_to_drop_per_net=2,
             ent_coef=0.3,           # decayed to 0.05 by EntropyDecayCallback
             policy_kwargs=policy_kwargs,

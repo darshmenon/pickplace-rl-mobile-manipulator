@@ -100,6 +100,7 @@ class PickPlaceEnv(gym.Env):
         curriculum_stage=0,
         observation_mode='full',
         enable_domain_randomization=True,
+        enable_assist=True,
     ):
         super().__init__()
         self.gz_partition = gz_partition  # stored for subprocess calls (e.g. _spawn_object)
@@ -107,6 +108,7 @@ class PickPlaceEnv(gym.Env):
         self._pending_curriculum_stage = None
         self.observation_mode = observation_mode
         self.enable_domain_randomization = bool(enable_domain_randomization)
+        self.enable_assist = bool(enable_assist)
 
         # Must be set before rclpy.init() so the node joins the right domain
         if ros_domain_id is not None:
@@ -365,7 +367,7 @@ class PickPlaceEnv(gym.Env):
         The RL action remains in charge, but this removes the dead-start problem where
         phase 1 never reaches the object closely enough to expose phase 2 grasp rewards.
         """
-        if self.current_phase not in [1, 2]:
+        if not self.enable_assist or self.current_phase not in [1, 2]:
             return np.zeros(6, dtype=np.float32)
 
         obj_pos = self.real_object_pos if self.real_object_pos is not None else self.object_pos
@@ -392,7 +394,7 @@ class PickPlaceEnv(gym.Env):
         Returns (linear, angular) velocity assists in [-1, 1] scale (pre-scaling).
         Anneals to zero over the same window as approach assist.
         """
-        if self.current_phase != 4:
+        if not self.enable_assist or self.current_phase != 4:
             return 0.0, 0.0
         assist_scale = max(0.0, 1.0 - self._global_steps / _ANNEAL_STEPS)
         if assist_scale < 0.05:
@@ -881,9 +883,9 @@ class PickPlaceEnv(gym.Env):
         # P-controller: velocity = (target - current) * gain, clamped to ±0.5 rad/s
         joint_vels = np.clip((target_joints - self.joint_positions[:6]) * 10.0, -0.5, 0.5)
         approach_assist = self._approach_assist_joint_vels()
-        # Anneal assist blend from full (1.0) to zero over 600k steps so the policy
+        # Anneal assist blend from full (1.0) to zero over _ANNEAL_STEPS so the policy
         # becomes self-sufficient as training matures.
-        assist_scale = max(0.0, 1.0 - self._global_steps / _ANNEAL_STEPS)
+        assist_scale = max(0.0, 1.0 - self._global_steps / _ANNEAL_STEPS) if self.enable_assist else 0.0
         if self.current_phase == 1:
             joint_vels = np.clip(assist_scale * approach_assist + 0.2 * joint_vels, -0.75, 0.75)
         elif self.current_phase == 2:
@@ -997,7 +999,7 @@ class PickPlaceEnv(gym.Env):
             'is_success': bool(self.episode_success),
             'success_rate': rolling_success_rate,
             'global_steps': int(self._global_steps),
-            'assist_scale': float(max(0.0, 1.0 - self._global_steps / _ANNEAL_STEPS)),
+            'assist_scale': float(max(0.0, 1.0 - self._global_steps / _ANNEAL_STEPS) if self.enable_assist else 0.0),
             'curriculum_stage': int(self.curriculum_stage),
             'curriculum_target_phase': int(self.curriculum_target_phase()),
             'stage_success': bool(self.stage_success),

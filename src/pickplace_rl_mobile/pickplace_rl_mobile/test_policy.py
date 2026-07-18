@@ -62,7 +62,7 @@ def _extract_object_position(obs: np.ndarray) -> np.ndarray:
         raise ValueError(f"Observation too short to extract object position: shape={obs.shape}")
     return np.asarray(obs[16:19], dtype=np.float32)
 
-def test_policy(model_path, num_episodes=5, curriculum_stage=0):
+def test_policy(model_path, num_episodes=5, curriculum_stage=0, enable_assist=False):
     """
     Test a trained policy and record images.
     """
@@ -94,6 +94,7 @@ def test_policy(model_path, num_episodes=5, curriculum_stage=0):
                 curriculum_stage=curriculum_stage,
                 observation_mode=observation_mode,
                 enable_domain_randomization=False,
+                enable_assist=enable_assist,
             )
         ])
         if not vecnorm_path:
@@ -199,10 +200,12 @@ def main():
                         help='Number of test episodes')
     parser.add_argument('--curriculum-stage', type=int, default=0,
                         help='Curriculum stage used for evaluation env')
+    parser.add_argument('--with-assist', action='store_true',
+                        help='Evaluate with approach/transport assist enabled')
     
     args = parser.parse_args()
     
-    test_policy(args.model, args.episodes, args.curriculum_stage)
+    test_policy(args.model, args.episodes, args.curriculum_stage, enable_assist=args.with_assist)
 
 if __name__ == '__main__':
     main()

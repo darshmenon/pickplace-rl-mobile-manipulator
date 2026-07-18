@@ -13,7 +13,7 @@ The software stack follows a modular **Sense-Plan-Act** pipeline on ROS 2 Jazzy 
        │                │                 │               │
        ▼                ▼                 ▼               ▼
   ManipRL Node    vla_vision_node    vla_vision_node  Safety Guard
-  (SAC policy)    OWLv2 (primary)    HSV (fallback)   joint limits
+  (TQC policy)    OWLv2 (primary)    HSV (fallback)   joint limits
   20 Hz           open-vocabulary    colour masks     obstacle e-stop
        │                │
        │          object_memory_node (30s decay)
@@ -88,9 +88,9 @@ Advances queue only after coordinator confirms task completion via `/vla/task_fe
 - Publishes JSON status: `{severity, violations[], ee_position, min_obstacle_dist, e_stop}`
 
 ### 2.9 RL Node (`manip_rl_node.py`)
-- Loads trained SAC model from `./rl_models/pickplace_final_model.zip`
-- 16-dim observation (joints, EE, object pose, phase, base pose)
-- 8-dim action (joint velocities, gripper, base linear/angular)
+- Loads trained TQC model from `./rl_models/pickplace_final_model.zip`
+- 46-dim observation (joints, velocities, gripper, EE/object/target vectors, base pose, previous action)
+- 9-dim action (6 joint deltas, gripper command, base linear, base angular)
 - Runs inference at 20 Hz
 
 ---
@@ -119,8 +119,8 @@ Custom FSM-based navigator without Nav2 dependency:
 
 ```
 PickPlaceEnv (Gymnasium)
-    ↕ 16-dim obs / 8-dim action
-SAC Agent (Stable-Baselines3)
+    ↕ 46-dim obs / 9-dim action
+TQC Agent (SB3-Contrib)
     ↓ saves checkpoints every 10k steps
 ./rl_models/pickplace_final_model.zip
     ↓ loaded by manip_rl_node
@@ -158,7 +158,7 @@ Domain randomisation (per episode): object position, target position, colour HSV
 ### Done
 - [x] Mobile base + 6-DOF arm + parallel gripper URDF
 - [x] RGB-D perception (HSV) + RViz debug overlay
-- [x] SAC RL environment + domain randomisation
+- [x] TQC RL environment + domain randomisation
 - [x] Real-time safety guard with e-stop
 - [x] Nav2 navigation + frontier-based exploration
 - [x] VLA pipeline skeleton (Phases 1-4)

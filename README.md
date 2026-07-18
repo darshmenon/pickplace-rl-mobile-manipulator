@@ -365,6 +365,8 @@ The current trainer resumes from checkpoints, restores VecNormalize stats, reloa
 | Verified grasp reward +1000 | Only awarded once the real Gazebo object actually lifts |
 | Grasp verification | Real-object lift verification over a 30-step window prevents reward hacking |
 
+Training rollouts use annealed approach/transport assist, but evaluation environments disable assist by default so best-model selection reflects the learned policy.
+
 ---
 
 ## Roadmap
@@ -374,7 +376,7 @@ The current trainer resumes from checkpoints, restores VecNormalize stats, reloa
 | Safety guard joint names | Done | Fixed to match UR3 (`shoulder_pan_joint`, etc.) with real DH FK |
 | Eval reward plot script | Done | `python3 plot_training.py` — reward curves + episode length |
 | Place phase reward shaping | Done | Phase 5 now has proximity bonuses, alignment bonuses, early-drop penalty |
-| Approach assist annealing | Done | Assist blend decays 1.0 → 0 over 600k steps |
+| Approach assist annealing | Done | Assist blend decays 1.0 → 0 over 1M steps |
 | Base navigation assist (phase 4) | Done | Gentle base nudge toward drop zone, also annealed |
 | Running success rate metric | Done | Rolling 100-episode success rate logged to `monitor.csv` and `info` |
 | Domain randomization → Gazebo | Done | Object respawned each episode with randomized color, mass, size, friction; gravity perturbed via `set_physics` |
