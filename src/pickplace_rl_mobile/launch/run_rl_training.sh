@@ -6,6 +6,9 @@
 #   ./run_rl_training.sh --resume-latest --headless       # resume latest numbered checkpoint
 #   ./run_rl_training.sh ./rl_models/best_model.zip       # resume explicit checkpoint
 #   ./run_rl_training.sh --curriculum-stage 2 --timesteps 200000 --headless
+#   ./run_rl_training.sh --algo ppo --policy-arch transformer --headless
+#   ./run_rl_training.sh --world pickplace_world_obstacles.world --headless
+#   ./run_rl_training.sh --adaptive-curriculum --headless
 
 set -eo pipefail
 
@@ -46,6 +49,10 @@ TIMESTEPS=500000
 CURRICULUM_STAGE=0
 SAVE_DIR="./rl_models"
 RESUME_POLICY="best"
+ALGO="tqc"
+POLICY_ARCH="mlp"
+ADAPTIVE_CURRICULUM=false
+WORLD="pickplace_world.world"
 TRAIN_DOMAIN=20
 TRAIN_PARTITION="sim_0"
 EVAL_DOMAIN=21
@@ -96,6 +103,21 @@ while [ $# -gt 0 ]; do
             SAVE_DIR="$2"
             shift
             ;;
+        --algo)
+            ALGO="$2"
+            shift
+            ;;
+        --policy-arch)
+            POLICY_ARCH="$2"
+            shift
+            ;;
+        --adaptive-curriculum)
+            ADAPTIVE_CURRICULUM=true
+            ;;
+        --world)
+            WORLD="$2"
+            shift
+            ;;
         *)
             MODEL_PATH="$1"
             RESUME_POLICY="explicit"
@@ -137,16 +159,17 @@ else
     echo "[run_rl_training] Starting fresh training run"
 fi
 echo "[run_rl_training] timesteps=$TIMESTEPS curriculum_stage=$CURRICULUM_STAGE save_dir=$SAVE_DIR headless=$HEADLESS"
+echo "[run_rl_training] algo=$ALGO policy_arch=$POLICY_ARCH adaptive_curriculum=$ADAPTIVE_CURRICULUM world=$WORLD"
 echo "[run_rl_training] train world: ROS_DOMAIN_ID=$TRAIN_DOMAIN GZ_PARTITION=$TRAIN_PARTITION"
 echo "[run_rl_training] eval world:  ROS_DOMAIN_ID=$EVAL_DOMAIN GZ_PARTITION=$EVAL_PARTITION (headless)"
 echo "[run_rl_training] runtime root: $RUNTIME_ROOT"
 
 env ROS_DOMAIN_ID=$TRAIN_DOMAIN GZ_PARTITION=$TRAIN_PARTITION \
-    ros2 launch pickplace_rl_mobile gazebo.launch.py headless:=$HEADLESS &
+    ros2 launch pickplace_rl_mobile gazebo.launch.py headless:=$HEADLESS world:="$WORLD" &
 GAZEBO_PID=$!
 
 env ROS_DOMAIN_ID=$EVAL_DOMAIN GZ_PARTITION=$EVAL_PARTITION \
-    ros2 launch pickplace_rl_mobile gazebo.launch.py headless:=true &
+    ros2 launch pickplace_rl_mobile gazebo.launch.py headless:=true world:="$WORLD" &
 EVAL_GAZEBO_PID=$!
 
 sleep 8
@@ -157,13 +180,19 @@ if [ -n "$MODEL_PATH" ]; then
         load_model:="$MODEL_PATH" \
         timesteps:="$TIMESTEPS" \
         save_dir:="$SAVE_DIR" \
-        curriculum_stage:="$CURRICULUM_STAGE" &
+        curriculum_stage:="$CURRICULUM_STAGE" \
+        algo:="$ALGO" \
+        policy_arch:="$POLICY_ARCH" \
+        adaptive_curriculum:="$ADAPTIVE_CURRICULUM" &
 else
     env ROS_DOMAIN_ID=$TRAIN_DOMAIN GZ_PARTITION=$TRAIN_PARTITION \
     ros2 launch pickplace_rl_mobile rl_train.launch.py \
         timesteps:="$TIMESTEPS" \
         save_dir:="$SAVE_DIR" \
-        curriculum_stage:="$CURRICULUM_STAGE" &
+        curriculum_stage:="$CURRICULUM_STAGE" \
+        algo:="$ALGO" \
+        policy_arch:="$POLICY_ARCH" \
+        adaptive_curriculum:="$ADAPTIVE_CURRICULUM" &
 fi
 TRAIN_PID=$!
 

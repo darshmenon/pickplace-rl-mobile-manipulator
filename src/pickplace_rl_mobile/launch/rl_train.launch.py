@@ -8,11 +8,16 @@ def _make_train_node(context):
         '--timesteps', LaunchConfiguration('timesteps').perform(context),
         '--save-dir', LaunchConfiguration('save_dir').perform(context),
         '--curriculum-stage', LaunchConfiguration('curriculum_stage').perform(context),
+        '--algo', LaunchConfiguration('algo').perform(context),
+        '--policy-arch', LaunchConfiguration('policy_arch').perform(context),
     ]
 
     load_model = LaunchConfiguration('load_model').perform(context).strip()
     if load_model:
         args.extend(['--load-model', load_model])
+
+    if LaunchConfiguration('adaptive_curriculum').perform(context).lower() in ('true', '1'):
+        args.append('--adaptive-curriculum')
 
     rl_node = Node(
         package='pickplace_rl_mobile',
@@ -46,11 +51,29 @@ def generate_launch_description():
         default_value='',
         description='Path to a saved model to resume training'
     )
+    algo_arg = DeclareLaunchArgument(
+        'algo',
+        default_value='tqc',
+        description='RL algorithm: tqc, sac, ppo, or ppo_lstm'
+    )
+    policy_arch_arg = DeclareLaunchArgument(
+        'policy_arch',
+        default_value='mlp',
+        description='Policy feature-extractor architecture: mlp or transformer'
+    )
+    adaptive_curriculum_arg = DeclareLaunchArgument(
+        'adaptive_curriculum',
+        default_value='false',
+        description='Advance curriculum stages on reward-plateau detection instead of fixed thresholds only'
+    )
 
     return LaunchDescription([
         timesteps_arg,
         save_dir_arg,
         curriculum_stage_arg,
         load_model_arg,
+        algo_arg,
+        policy_arch_arg,
+        adaptive_curriculum_arg,
         OpaqueFunction(function=_make_train_node),
     ])

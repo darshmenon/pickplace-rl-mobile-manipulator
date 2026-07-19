@@ -1,0 +1,47 @@
+# Per-algorithm RL hyperparameters, loaded by pickplace_rl_mobile.agent_factory.
+# Keys mirror each algorithm's SB3 / SB3-contrib constructor kwargs. Edit
+# here to sweep hyperparameters without touching train_rl.py. Any algorithm
+# or key omitted here falls back to the built-in defaults in agent_factory.py.
+
+tqc:
+  learning_rate: 0.0003
+  buffer_size: 1000000
+  learning_starts: 1000
+  batch_size: 1024
+  tau: 0.005
+  gamma: 0.99
+  train_freq: 1
+  gradient_steps: 4
+  top_quantiles_to_drop_per_net: 2
+  ent_coef: 0.3
+
+sac:
+  learning_rate: 0.0003
+  buffer_size: 1000000
+  learning_starts: 1000
+  batch_size: 1024
+  tau: 0.005
+  gamma: 0.99
+  train_freq: 1
+  gradient_steps: 4
+  ent_coef: 0.3
+
+ppo:
+  learning_rate: 0.0003
+  n_steps: 2048
+  batch_size: 256
+  n_epochs: 10
+  gamma: 0.99
+  gae_lambda: 0.95
+  clip_range: 0.2
+  ent_coef: 0.01
+
+ppo_lstm:
+  learning_rate: 0.0003
+  n_steps: 1024
+  batch_size: 128
+  n_epochs: 10
+  gamma: 0.99
+  gae_lambda: 0.95
+  clip_range: 0.2
+  ent_coef: 0.01

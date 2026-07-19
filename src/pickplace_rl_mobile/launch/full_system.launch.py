@@ -17,7 +17,7 @@ import re
 from launch import LaunchDescription
 from launch.actions import (
     IncludeLaunchDescription, DeclareLaunchArgument, GroupAction, TimerAction,
-    AppendEnvironmentVariable
+    AppendEnvironmentVariable, OpaqueFunction
 )
 from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
@@ -48,10 +48,26 @@ def get_pickplace_share_dir():
     return get_package_share_directory('pickplace_rl_mobile')
 
 
+def _make_gazebo_include(context):
+    pkg_dir = get_pickplace_share_dir()
+    world_name = LaunchConfiguration('world').perform(context)
+    world_file = os.path.join(pkg_dir, 'worlds', world_name)
+    gazebo = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource([
+            os.path.join(
+                get_package_share_directory('ros_gz_sim'),
+                'launch', 'gz_sim.launch.py')
+        ]),
+        launch_arguments={
+            'gz_args': f'-r -v 1 --physics-engine gz-physics-bullet-featherstone-plugin {world_file}'
+        }.items()
+    )
+    return [gazebo]
+
+
 def generate_launch_description():
     pkg_dir = get_pickplace_share_dir()
     urdf_file = os.path.join(pkg_dir, 'urdf', 'mobile_ur3.urdf')
-    world_file = os.path.join(pkg_dir, 'worlds', 'pickplace_world.world')
     nav2_params = os.path.join(pkg_dir, 'config', 'nav2_params.yaml')
     ur_description_share = get_package_share_directory('ur_description')
     robotiq_share = get_package_share_directory('robotiq_2f_85_gripper_visualization')
@@ -68,6 +84,10 @@ def generate_launch_description():
     )
 
     # Launch arguments
+    world_arg = DeclareLaunchArgument(
+        'world', default_value='pickplace_world.world',
+        description='World SDF filename under worlds/ (e.g. pickplace_world.world, '
+                     'pickplace_world_obstacles.world, pickplace_world_clutter.world)')
     use_nav2_arg = DeclareLaunchArgument(
         'use_nav2', default_value='false',
         description='Whether to launch Nav2 navigation stack')
@@ -80,18 +100,6 @@ def generate_launch_description():
     use_perception_arg = DeclareLaunchArgument(
         'use_perception', default_value='true',
         description='Use camera perception for object detection (false = fallback fixed position)')
-
-    # Gazebo
-    gazebo = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource([
-            os.path.join(
-                get_package_share_directory('ros_gz_sim'),
-                'launch', 'gz_sim.launch.py')
-        ]),
-        launch_arguments={
-            'gz_args': f'-r -v 1 --physics-engine gz-physics-bullet-featherstone-plugin {world_file}'
-        }.items()
-    )
 
     # Robot state publisher
     robot_state_publisher = Node(
@@ -229,12 +237,13 @@ def generate_launch_description():
     )
 
     return LaunchDescription([
+        world_arg,
         use_nav2_arg,
         use_rl_arg,
         model_path_arg,
         use_perception_arg,
         set_gz_resource_path,
-        gazebo,
+        OpaqueFunction(function=_make_gazebo_include),
         robot_state_publisher,
         delayed,
     ])

@@ -3,9 +3,9 @@
 import os
 import re
 from launch import LaunchDescription
-from launch.actions import AppendEnvironmentVariable, IncludeLaunchDescription, TimerAction
+from launch.actions import AppendEnvironmentVariable, IncludeLaunchDescription, TimerAction, OpaqueFunction
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import LaunchConfiguration, PythonExpression
+from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 from launch.actions import DeclareLaunchArgument
 from ament_index_python.packages import get_package_share_directory
@@ -42,15 +42,42 @@ def get_pickplace_share_dir():
     return get_package_share_directory('pickplace_rl_mobile')
 
 
+def _make_gz_sim(context):
+    """Resolve the world file and Gazebo launch args at runtime, since the
+    'world' launch argument isn't available until the context is live."""
+    pkg_dir = get_pickplace_share_dir()
+    world_name = LaunchConfiguration('world').perform(context)
+    world_path = os.path.join(pkg_dir, 'worlds', world_name)
+    headless_value = LaunchConfiguration('headless').perform(context)
+
+    pkg_ros_gz_sim = get_package_share_directory('ros_gz_sim')
+    physics_flag = '--physics-engine gz-physics-bullet-featherstone-plugin'
+    gz_args = (
+        f'-s -r -v 1 {physics_flag} {world_path}' if headless_value == 'true'
+        else f'-r -v 1 {physics_flag} {world_path}'
+    )
+    gz_sim = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(
+            os.path.join(pkg_ros_gz_sim, 'launch', 'gz_sim.launch.py')
+        ),
+        launch_arguments=[('gz_args', gz_args)],
+    )
+    return [gz_sim]
+
+
 def generate_launch_description():
 
     headless_arg = DeclareLaunchArgument(
         'headless', default_value='false',
         description='Run Gazebo headless (no GUI) for faster training fps'
     )
+    world_arg = DeclareLaunchArgument(
+        'world', default_value='pickplace_world.world',
+        description='World SDF filename under worlds/ (e.g. pickplace_world.world, '
+                     'pickplace_world_obstacles.world, pickplace_world_clutter.world)'
+    )
 
     pkg_dir = get_pickplace_share_dir()
-    world_path = os.path.join(pkg_dir, 'worlds', 'pickplace_world.world')
     urdf_path = os.path.join(pkg_dir, 'urdf', 'mobile_ur3.urdf')
     ur_description_share = get_package_share_directory('ur_description')
     robotiq_share = get_package_share_directory('robotiq_2f_85_gripper_visualization')
@@ -85,18 +112,6 @@ def generate_launch_description():
         'AMENT_PREFIX_PATH',
         harmonic_gz_control_prefix,
         prepend=True,
-    )
-
-    pkg_ros_gz_sim = get_package_share_directory('ros_gz_sim')
-    gz_sim = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource(
-            os.path.join(pkg_ros_gz_sim, 'launch', 'gz_sim.launch.py')
-        ),
-        launch_arguments=[('gz_args', PythonExpression([
-            "'-s -r -v 1 --physics-engine gz-physics-bullet-featherstone-plugin " + world_path + "' if '",
-            LaunchConfiguration('headless'),
-            "' == 'true' else '-r -v 1 --physics-engine gz-physics-bullet-featherstone-plugin " + world_path + "'"
-        ]))]
     )
 
     robot_state_publisher = Node(
@@ -175,11 +190,12 @@ def generate_launch_description():
 
     return LaunchDescription([
         headless_arg,
+        world_arg,
         set_gz_resource_path,
         set_gz_control_plugin_path,
         set_gz_control_library_path,
         set_gz_control_ament_path,
-        gz_sim,
+        OpaqueFunction(function=_make_gz_sim),
         robot_state_publisher,
         spawn_robot,
         spawners,

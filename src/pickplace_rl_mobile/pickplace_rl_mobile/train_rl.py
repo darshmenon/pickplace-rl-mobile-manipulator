@@ -4,6 +4,7 @@ import argparse
 import math
 import os
 import torch
+import yaml
 
 # torch.optim.Adam lazily imports torch._dynamo (and transitively triton) on
 # construction. If that first happens after TensorFlow is loaded (sb3_contrib
@@ -12,12 +13,12 @@ import torch
 # import to happen first, while the process is still TF-free.
 torch.optim.Adam(torch.nn.Linear(1, 1).parameters())
 
-from sb3_contrib import TQC
 from stable_baselines3.common.save_util import load_from_zip_file
 from stable_baselines3.common.callbacks import CheckpointCallback, EvalCallback, BaseCallback
 from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.vec_env import SubprocVecEnv, DummyVecEnv, VecNormalize
 from pickplace_rl_mobile.pickplace_env import PickPlaceEnv
+from pickplace_rl_mobile import agent_factory
 
 
 class SaveVecNormalizeCallback(BaseCallback):
@@ -69,38 +70,80 @@ class EntropyDecayCallback(BaseCallback):
         return True
 
 
+def _load_curriculum_config() -> dict:
+    """Load stage thresholds from config/curriculum.yaml, falling back to the
+    values this project has always used if the file is missing/invalid."""
+    defaults = {
+        # Lowered from (50/250/600/900) → (30/150/400/700) for domain randomization,
+        # then further reduced to account for multi-shape generalization difficulty.
+        'advance_thresholds': {1: 25.0, 2: 120.0, 3: 350.0, 4: 600.0},
+        'revert_thresholds': {2: 60.0, 3: 200.0, 4: 450.0, 5: 700.0},
+        'adaptive': {'window': 5, 'epsilon': 5.0, 'floor_ratio': 0.6},
+    }
+    path = agent_factory.resolve_config_path('curriculum.yaml')
+    if not path:
+        return defaults
+    try:
+        with open(path) as f:
+            data = yaml.safe_load(f) or {}
+        for key, fallback in defaults.items():
+            value = data.get(key)
+            if isinstance(value, dict):
+                merged = dict(fallback)
+                merged.update({int(k): v for k, v in value.items()} if key != 'adaptive'
+                              else value)
+                defaults[key] = merged
+        return defaults
+    except Exception as exc:
+        print(f"Warning: could not load {path} ({exc}); using built-in curriculum thresholds")
+        return defaults
+
+
 class CurriculumCallback(BaseCallback):
-    """Advance or revert staged curricula based on evaluation results."""
+    """Advance or revert staged curricula based on evaluation results.
 
-    # Lowered from (50/250/600/900) → (30/150/400/700) for domain randomization,
-    # then further reduced to account for multi-shape generalization difficulty.
-    ADVANCE_THRESHOLDS = {
-        1: 25.0,
-        2: 120.0,
-        3: 350.0,
-        4: 600.0,
-    }
+    Default mode advances/reverts on fixed reward thresholds (from
+    config/curriculum.yaml). With adaptive=True, a stage instead advances
+    once eval reward plateaus (rolling improvement below `epsilon` over the
+    last `window` evals) provided it has cleared `floor_ratio` of the fixed
+    advance threshold as a safety floor — this lets stages that learn faster
+    than expected advance sooner, and slower stages still get the same floor
+    guarantee as fixed-threshold mode.
+    """
 
-    # Revert to previous stage if reward falls this far below advance threshold.
-    REVERT_THRESHOLDS = {
-        2: 60.0,
-        3: 200.0,
-        4: 450.0,
-        5: 700.0,
-    }
-
-    def __init__(self, eval_callback: EvalCallback, eval_env, starting_stage: int):
+    def __init__(self, eval_callback: EvalCallback, eval_env, starting_stage: int,
+                 adaptive: bool = False):
         super().__init__()
         self.eval_callback = eval_callback
         self.eval_env = eval_env
         self.current_stage = int(starting_stage)
+        self.adaptive = adaptive
         self._last_eval_step = 0
+        self._history = {}
+
+        cfg = _load_curriculum_config()
+        self.ADVANCE_THRESHOLDS = cfg['advance_thresholds']
+        self.REVERT_THRESHOLDS = cfg['revert_thresholds']
+        self._adapt_window = int(cfg['adaptive']['window'])
+        self._adapt_epsilon = float(cfg['adaptive']['epsilon'])
+        self._adapt_floor_ratio = float(cfg['adaptive']['floor_ratio'])
 
     def _set_stage(self, stage: int, mean_reward: float, reason: str) -> None:
         self.training_env.env_method('set_curriculum_stage', stage)
         self.eval_env.env_method('set_curriculum_stage', stage)
         self.current_stage = stage
         print(f"Curriculum {reason} to stage {stage} (eval reward {mean_reward:.2f})")
+
+    def _plateaued(self, mean_reward: float) -> bool:
+        history = self._history.setdefault(self.current_stage, [])
+        history.append(mean_reward)
+        if len(history) < self._adapt_window:
+            return False
+        window = history[-self._adapt_window:]
+        improvement = window[-1] - window[0]
+        floor = self.ADVANCE_THRESHOLDS.get(self.current_stage)
+        above_floor = floor is None or window[-1] >= floor * self._adapt_floor_ratio
+        return improvement < self._adapt_epsilon and above_floor
 
     def _on_step(self) -> bool:
         if self.current_stage <= 0:
@@ -119,11 +162,16 @@ class CurriculumCallback(BaseCallback):
             self._set_stage(self.current_stage - 1, mean_reward, "REVERT")
             return True
 
-        # Advance if reward is strong enough
-        if self.current_stage < 5:
-            advance_threshold = self.ADVANCE_THRESHOLDS.get(self.current_stage)
-            if advance_threshold is not None and mean_reward >= advance_threshold:
-                self._set_stage(self.current_stage + 1, mean_reward, "ADVANCE")
+        if self.current_stage >= 5:
+            return True
+
+        # Advance if reward is strong enough (fixed threshold), or — in
+        # adaptive mode — once reward plateaus above the safety floor.
+        advance_threshold = self.ADVANCE_THRESHOLDS.get(self.current_stage)
+        if advance_threshold is not None and mean_reward >= advance_threshold:
+            self._set_stage(self.current_stage + 1, mean_reward, "ADVANCE")
+        elif self.adaptive and self._plateaued(mean_reward):
+            self._set_stage(self.current_stage + 1, mean_reward, "ADVANCE (adaptive plateau)")
 
         return True
 
@@ -226,7 +274,8 @@ _SINGLE_WORLD_EVAL_PARTITION = 'sim_1'
 _DEFAULT_N_EVAL_EPISODES = 10
 
 
-def train(total_timesteps=500000, save_dir='./models', n_envs=1, load_model=None, curriculum_stage=0):
+def train(total_timesteps=500000, save_dir='./models', n_envs=1, load_model=None, curriculum_stage=0,
+          algo='tqc', policy_arch='mlp', adaptive_curriculum=False):
     os.makedirs(save_dir, exist_ok=True)
     load_model = load_model.strip() if isinstance(load_model, str) else load_model
     observation_mode = _infer_observation_mode(load_model)
@@ -339,85 +388,69 @@ def train(total_timesteps=500000, save_dir='./models', n_envs=1, load_model=None
         eval_callback=eval_callback,
         eval_env=eval_env,
         starting_stage=curriculum_stage,
+        adaptive=adaptive_curriculum,
     )
 
-    # 3-layer 512-unit network: bigger than default [256,256] to capture
-    # the complex mapping from 46-dim obs to 9-dim continuous actions.
-    policy_kwargs = dict(net_arch=[512, 512, 512])
-
     if load_model:
-        print(f"Loading existing model from {load_model}...")
-        model = TQC.load(
-            load_model,
-            env=env,
-            tensorboard_log=os.path.join(save_dir, 'tensorboard'),
+        print(f"Loading existing {algo.upper()} model from {load_model}...")
+        model = agent_factory.load_model(
+            algo, load_model, env=env, tensorboard_log=os.path.join(save_dir, 'tensorboard'),
         )
 
-        # Keep ent_coef at 0.1 on resume — 0.3 was too aggressive and hurt convergence.
-        model.ent_coef = 0.1
-        model.ent_coef_tensor = torch.tensor(0.1, device=model.device)
-        if model.log_ent_coef is not None:
-            with torch.no_grad():
-                model.log_ent_coef.data.fill_(math.log(0.1))
-        print("Set ent_coef=0.1 on resume")
+        if agent_factory.is_entropy_tunable(algo):
+            # Keep ent_coef at 0.1 on resume — 0.3 was too aggressive and hurt convergence.
+            model.ent_coef = 0.1
+            model.ent_coef_tensor = torch.tensor(0.1, device=model.device)
+            if model.log_ent_coef is not None:
+                with torch.no_grad():
+                    model.log_ent_coef.data.fill_(math.log(0.1))
+            print("Set ent_coef=0.1 on resume")
 
-        model.gradient_steps = 4
-        print("Set gradient_steps=4 on resume")
+        if agent_factory.is_off_policy(algo):
+            model.gradient_steps = 4
+            print("Set gradient_steps=4 on resume")
 
-        # Load replay buffer if available — avoids cold-start problem entirely.
-        replay_buf_candidates = [
-            os.path.join(save_dir, 'replay_buffer.pkl'),
-            os.path.join(load_model_dir, 'replay_buffer.pkl') if load_model_dir else '',
-        ]
-        replay_buf_path = next((path for path in replay_buf_candidates if path and os.path.exists(path)), None)
-        if replay_buf_path:
-            try:
-                model.load_replay_buffer(replay_buf_path)
-                replay_obs_shape = tuple(model.replay_buffer.observations.shape[2:])
-                expected_obs_shape = tuple(model.observation_space.shape)
-                if replay_obs_shape != expected_obs_shape:
-                    print(
-                        f"Warning: replay buffer obs shape {replay_obs_shape} does not match "
-                        f"env shape {expected_obs_shape}; resetting buffer"
-                    )
+            # Load replay buffer if available — avoids cold-start problem entirely.
+            replay_buf_candidates = [
+                os.path.join(save_dir, 'replay_buffer.pkl'),
+                os.path.join(load_model_dir, 'replay_buffer.pkl') if load_model_dir else '',
+            ]
+            replay_buf_path = next((path for path in replay_buf_candidates if path and os.path.exists(path)), None)
+            if replay_buf_path:
+                try:
+                    model.load_replay_buffer(replay_buf_path)
+                    replay_obs_shape = tuple(model.replay_buffer.observations.shape[2:])
+                    expected_obs_shape = tuple(model.observation_space.shape)
+                    if replay_obs_shape != expected_obs_shape:
+                        print(
+                            f"Warning: replay buffer obs shape {replay_obs_shape} does not match "
+                            f"env shape {expected_obs_shape}; resetting buffer"
+                        )
+                        _reset_replay_buffer(model)
+                        _schedule_replay_prefill(model)
+                    else:
+                        print(f"Loaded replay buffer ({model.replay_buffer.size()} transitions)")
+                except Exception as exc:
+                    print(f"Warning: could not load replay buffer from {replay_buf_path} ({exc})")
                     _reset_replay_buffer(model)
                     _schedule_replay_prefill(model)
-                else:
-                    print(f"Loaded replay buffer ({model.replay_buffer.size()} transitions)")
-            except Exception as exc:
-                print(f"Warning: could not load replay buffer from {replay_buf_path} ({exc})")
-                _reset_replay_buffer(model)
+            else:
+                # No saved buffer — pre-fill with policy rollouts before first update
+                # so the agent has a diverse starting distribution to learn from.
                 _schedule_replay_prefill(model)
-        else:
-            # No saved buffer — pre-fill with policy rollouts before first update
-            # so TQC has a diverse starting distribution to learn from.
-            _schedule_replay_prefill(model)
     else:
-        print("Initializing new TQC model...")
-        model = TQC(
-            'MlpPolicy',
-            env,
-            learning_rate=3e-4,
-            buffer_size=1000000,
-            learning_starts=1000,
-            batch_size=1024,
-            tau=0.005,
-            gamma=0.99,
-            train_freq=1,
-            gradient_steps=4,
-            top_quantiles_to_drop_per_net=2,
-            ent_coef=0.3,           # decayed to 0.05 by EntropyDecayCallback
-            policy_kwargs=policy_kwargs,
-            verbose=1,
-            device='auto',
-            tensorboard_log=os.path.join(save_dir, 'tensorboard')
+        print(f"Initializing new {algo.upper()} model (policy_arch={policy_arch})...")
+        model = agent_factory.create_model(
+            algo, env, policy_arch=policy_arch,
+            tensorboard_log=os.path.join(save_dir, 'tensorboard'),
+            device='auto', verbose=1,
         )
 
     callbacks = [checkpoint_callback, vecnorm_callback, eval_callback, curriculum_callback]
-    if not load_model:
+    if not load_model and agent_factory.is_entropy_tunable(algo):
         callbacks.append(EntropyDecayCallback(initial=0.3, final=0.05, decay_steps=100000))
 
-    print(f"Starting TQC training for {total_timesteps} timesteps across {n_envs} env(s)...")
+    print(f"Starting {algo.upper()} training for {total_timesteps} timesteps across {n_envs} env(s)...")
     model.learn(
         total_timesteps=total_timesteps,
         callback=callbacks,
@@ -428,7 +461,8 @@ def train(total_timesteps=500000, save_dir='./models', n_envs=1, load_model=None
     final_model_path = os.path.join(save_dir, 'pickplace_final_model')
     model.save(final_model_path)
     env.save(vecnorm_path)
-    model.save_replay_buffer(os.path.join(save_dir, 'replay_buffer'))
+    if agent_factory.is_off_policy(algo):
+        model.save_replay_buffer(os.path.join(save_dir, 'replay_buffer'))
     print(f"Training complete! Model → {final_model_path}, VecNormalize → {vecnorm_path}")
 
     env.close()
@@ -447,6 +481,13 @@ def main():
                         help='Path to a saved model to resume training (default: None)')
     parser.add_argument('--curriculum-stage', type=int, default=1,
                         help='Curriculum stage: 0=full, 1=reach, 2=grasp, 3=lift, 4=transport, 5=place')
+    parser.add_argument('--algo', type=str, default='tqc', choices=agent_factory.ALGOS,
+                        help='RL algorithm (default: tqc)')
+    parser.add_argument('--policy-arch', type=str, default='mlp', choices=agent_factory.POLICY_ARCHS,
+                        help='Policy feature-extractor architecture (default: mlp)')
+    parser.add_argument('--adaptive-curriculum', action='store_true',
+                        help='Advance curriculum stages on reward-plateau detection instead of '
+                             'fixed thresholds only (see config/curriculum.yaml)')
 
     args, unknown = parser.parse_known_args()
 
@@ -456,6 +497,9 @@ def main():
         n_envs=args.n_envs,
         load_model=args.load_model,
         curriculum_stage=args.curriculum_stage,
+        algo=args.algo,
+        policy_arch=args.policy_arch,
+        adaptive_curriculum=args.adaptive_curriculum,
     )
 
 

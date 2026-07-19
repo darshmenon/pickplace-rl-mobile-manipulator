@@ -25,10 +25,16 @@ setup(
             'urdf/mobile_ur3.urdf',
             'urdf/pickplace_mobile_arm.urdf',
         ]),
-        ('share/' + package_name + '/worlds', ['worlds/pickplace_world.world']),
+        ('share/' + package_name + '/worlds', [
+            'worlds/pickplace_world.world',
+            'worlds/pickplace_world_obstacles.world',
+            'worlds/pickplace_world_clutter.world',
+        ]),
         ('share/' + package_name + '/config', [
             'config/nav2_params.yaml',
             'config/robot_view.rviz',
+            'config/algo_hparams.yaml',
+            'config/curriculum.yaml',
         ]),
     ],
     install_requires=['setuptools'],

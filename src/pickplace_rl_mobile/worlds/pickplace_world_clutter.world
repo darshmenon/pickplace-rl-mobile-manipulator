@@ -1,0 +1,262 @@
+<?xml version="1.0"?>
+<!--
+  Harder clutter variant of pickplace_world.world: the same two offset
+  pillars as pickplace_world_obstacles.world, plus two gated corridors
+  (4 more pillars) the base must pass through during phase 4 transport.
+  Gates are centered on x=0.6 (bin/nominal-target x) with a 0.60m clear
+  opening — wider than the 0.45x0.35m chassis footprint (see the
+  base-over-object termination math in CONCEPTS.md) so it's passable, but
+  narrow enough to force deliberate navigation instead of a straight line.
+  Bin/target/object/camera are identical to pickplace_world.world — see
+  pickplace_world_obstacles.world for why that matters.
+  Select with `world:=pickplace_world_clutter.world`.
+-->
+<sdf version="1.7">
+  <world name="pickplace_world">
+
+    <physics name="bullet_physics" type="bullet_featherstone">
+      <max_step_size>0.001</max_step_size>
+      <real_time_factor>1</real_time_factor>
+    </physics>
+
+    <!-- Lighting -->
+    <include>
+      <uri>
+        https://fuel.gazebosim.org/1.0/OpenRobotics/models/Sun
+      </uri>
+    </include>
+
+    <!-- Ground plane -->
+    <include>
+      <uri>
+        https://fuel.gazebosim.org/1.0/OpenRobotics/models/Ground Plane
+      </uri>
+    </include>
+
+    <!-- Object Bin (solid platform — pickup object rests on top) -->
+    <model name="object_bin">
+      <static>true</static>
+      <pose>0.6 0 0 0 0 0</pose>
+      <link name="platform">
+        <pose>0 0 0.05 0 0 0</pose>
+        <visual name="visual">
+          <geometry>
+            <box><size>0.38 0.38 0.10</size></box>
+          </geometry>
+          <material>
+            <ambient>0.5 0.3 0.1 1</ambient>
+            <diffuse>0.5 0.3 0.1 1</diffuse>
+          </material>
+        </visual>
+        <collision name="collision">
+          <geometry>
+            <box><size>0.38 0.38 0.10</size></box>
+          </geometry>
+        </collision>
+      </link>
+    </model>
+
+    <!-- Target Zone (placement area) -->
+    <model name="target_zone">
+      <static>true</static>
+      <pose>0.6 0.5 0.001 0 0 0</pose>
+      <link name="marker">
+        <visual name="visual">
+          <geometry>
+            <cylinder>
+              <radius>0.15</radius>
+              <length>0.002</length>
+            </cylinder>
+          </geometry>
+          <material>
+            <ambient>0 1 0 0.5</ambient>
+            <diffuse>0 1 0 0.5</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- Pickable Object: 6.5x6.5x6.5 cm solid box on top of platform (platform top=0.10m, cube half=0.0325m) -->
+    <model name="pickup_object">
+      <pose>0.6 0 0.1325 0 0 0</pose>
+      <link name="link">
+        <inertial>
+          <!-- 500g solid cube: side=0.065m
+               Ixx=Iyy=Izz = m*(a²+b²)/12 = 0.5*(0.004225+0.004225)/12 ~= 0.000352 -->
+          <mass>0.5</mass>
+          <inertia>
+            <ixx>0.000352</ixx>
+            <iyy>0.000352</iyy>
+            <izz>0.000352</izz>
+          </inertia>
+        </inertial>
+        <velocity_decay>
+          <linear>0.5</linear>
+          <angular>1.0</angular>
+        </velocity_decay>
+        <visual name="visual">
+          <geometry>
+            <box>
+              <size>0.065 0.065 0.065</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>1 0 0 1</ambient>
+            <diffuse>1 0 0 1</diffuse>
+          </material>
+        </visual>
+        <collision name="collision">
+          <geometry>
+            <box>
+              <size>0.065 0.065 0.065</size>
+            </box>
+          </geometry>
+          <surface>
+            <friction>
+              <ode>
+                <mu>1.5</mu>
+                <mu2>1.5</mu2>
+              </ode>
+            </friction>
+            <contact>
+              <ode>
+                <kp>100000</kp>
+                <kd>500</kd>
+                <max_vel>0.01</max_vel>
+                <min_depth>0.001</min_depth>
+              </ode>
+            </contact>
+          </surface>
+        </collision>
+      </link>
+    </model>
+
+    <!-- Static Camera (world-fixed, no jitter) -->
+    <model name="static_camera_model">
+      <static>true</static>
+      <pose>0.6 0.0 0.8 0 1.5708 0</pose>
+      <link name="camera_link">
+        <sensor name="camera_head" type="rgbd_camera">
+          <camera>
+            <horizontal_fov>1.5184</horizontal_fov>
+            <image>
+              <width>424</width>
+              <height>240</height>
+            </image>
+            <clip>
+              <near>0.05</near>
+              <far>5.0</far>
+            </clip>
+          </camera>
+          <always_on>1</always_on>
+          <gz_frame_id>camera_head_depth_optical_frame</gz_frame_id>
+          <topic>camera_head</topic>
+          <update_rate>5</update_rate>
+          <visualize>true</visualize>
+        </sensor>
+      </link>
+    </model>
+
+    <!-- Offset clutter pillars (same as pickplace_world_obstacles.world) -->
+    <model name="obstacle_pillar_1">
+      <static>true</static>
+      <pose>0.85 0.25 0.125 0 0 0</pose>
+      <link name="link">
+        <visual name="visual">
+          <geometry>
+            <box><size>0.08 0.08 0.25</size></box>
+          </geometry>
+          <material>
+            <ambient>0.6 0.6 0.6 1</ambient>
+            <diffuse>0.6 0.6 0.6 1</diffuse>
+          </material>
+        </visual>
+        <collision name="collision">
+          <geometry>
+            <box><size>0.08 0.08 0.25</size></box>
+          </geometry>
+        </collision>
+      </link>
+    </model>
+
+    <model name="obstacle_pillar_2">
+      <static>true</static>
+      <pose>0.35 0.4 0.125 0 0 0</pose>
+      <link name="link">
+        <visual name="visual">
+          <geometry>
+            <box><size>0.08 0.08 0.25</size></box>
+          </geometry>
+          <material>
+            <ambient>0.6 0.6 0.6 1</ambient>
+            <diffuse>0.6 0.6 0.6 1</diffuse>
+          </material>
+        </visual>
+        <collision name="collision">
+          <geometry>
+            <box><size>0.08 0.08 0.25</size></box>
+          </geometry>
+        </collision>
+      </link>
+    </model>
+
+    <!-- Gate 1 (y=0.28): posts at x=0.25 and x=0.95, 0.60m clear opening
+         centered on x=0.6 -->
+    <model name="gate1_post_left">
+      <static>true</static>
+      <pose>0.25 0.28 0.15 0 0 0</pose>
+      <link name="link">
+        <visual name="visual">
+          <geometry><box><size>0.10 0.10 0.30</size></box></geometry>
+          <material><ambient>0.7 0.4 0.1 1</ambient><diffuse>0.7 0.4 0.1 1</diffuse></material>
+        </visual>
+        <collision name="collision">
+          <geometry><box><size>0.10 0.10 0.30</size></box></geometry>
+        </collision>
+      </link>
+    </model>
+    <model name="gate1_post_right">
+      <static>true</static>
+      <pose>0.95 0.28 0.15 0 0 0</pose>
+      <link name="link">
+        <visual name="visual">
+          <geometry><box><size>0.10 0.10 0.30</size></box></geometry>
+          <material><ambient>0.7 0.4 0.1 1</ambient><diffuse>0.7 0.4 0.1 1</diffuse></material>
+        </visual>
+        <collision name="collision">
+          <geometry><box><size>0.10 0.10 0.30</size></box></geometry>
+        </collision>
+      </link>
+    </model>
+
+    <!-- Gate 2 (y=0.42): same 0.60m clear opening, second gate closer to
+         the target zone -->
+    <model name="gate2_post_left">
+      <static>true</static>
+      <pose>0.25 0.42 0.15 0 0 0</pose>
+      <link name="link">
+        <visual name="visual">
+          <geometry><box><size>0.10 0.10 0.30</size></box></geometry>
+          <material><ambient>0.7 0.4 0.1 1</ambient><diffuse>0.7 0.4 0.1 1</diffuse></material>
+        </visual>
+        <collision name="collision">
+          <geometry><box><size>0.10 0.10 0.30</size></box></geometry>
+        </collision>
+      </link>
+    </model>
+    <model name="gate2_post_right">
+      <static>true</static>
+      <pose>0.95 0.42 0.15 0 0 0</pose>
+      <link name="link">
+        <visual name="visual">
+          <geometry><box><size>0.10 0.10 0.30</size></box></geometry>
+          <material><ambient>0.7 0.4 0.1 1</ambient><diffuse>0.7 0.4 0.1 1</diffuse></material>
+        </visual>
+        <collision name="collision">
+          <geometry><box><size>0.10 0.10 0.30</size></box></geometry>
+        </collision>
+      </link>
+    </model>
+
+  </world>
+</sdf>

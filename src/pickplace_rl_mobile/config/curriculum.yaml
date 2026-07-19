@@ -1,0 +1,25 @@
+# Curriculum stage advance/revert reward thresholds, loaded by
+# pickplace_rl_mobile.train_rl.CurriculumCallback.
+#
+# In default (fixed-threshold) mode a stage advances once eval mean reward
+# reaches advance_thresholds[stage], and reverts if it falls below
+# revert_thresholds[stage]. With --adaptive-curriculum, advance_thresholds
+# are instead used as a safety floor (adapt_floor_ratio fraction of the
+# value below) around a rolling-plateau heuristic — see CurriculumCallback.
+
+advance_thresholds:
+  1: 25.0
+  2: 120.0
+  3: 350.0
+  4: 600.0
+
+revert_thresholds:
+  2: 60.0
+  3: 200.0
+  4: 450.0
+  5: 700.0
+
+adaptive:
+  window: 5
+  epsilon: 5.0
+  floor_ratio: 0.6

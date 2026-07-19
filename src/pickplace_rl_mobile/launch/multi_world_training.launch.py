@@ -122,7 +122,8 @@ def launch_setup(context, *args, **kwargs):
     n_worlds = int(LaunchConfiguration('n_worlds').perform(context))
 
     pkg_dir = get_package_share_directory('pickplace_rl_mobile')
-    world_path = os.path.join(pkg_dir, 'worlds', 'pickplace_world.world')
+    world_name = LaunchConfiguration('world').perform(context)
+    world_path = os.path.join(pkg_dir, 'worlds', world_name)
     urdf_path = os.path.join(pkg_dir, 'urdf', 'mobile_ur3.urdf')
 
     ur_description_share = get_package_share_directory('ur_description')
@@ -246,6 +247,12 @@ def generate_launch_description():
             'n_worlds',
             default_value='4',
             description='Number of parallel Gazebo worlds for training',
+        ),
+        DeclareLaunchArgument(
+            'world',
+            default_value='pickplace_world.world',
+            description='World SDF filename under worlds/ (e.g. pickplace_world.world, '
+                         'pickplace_world_obstacles.world, pickplace_world_clutter.world)',
         ),
         OpaqueFunction(function=launch_setup),
     ])
