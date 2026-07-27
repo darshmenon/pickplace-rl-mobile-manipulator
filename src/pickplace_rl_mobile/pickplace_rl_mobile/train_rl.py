@@ -21,6 +21,27 @@ from pickplace_rl_mobile.pickplace_env import PickPlaceEnv
 from pickplace_rl_mobile import agent_factory
 
 
+class AtomicCheckpointCallback(CheckpointCallback):
+    """CheckpointCallback saves straight to its final path, so a process kill
+    mid-write (OOM, manual kill, crash) leaves a truncated, unloadable zip —
+    which is exactly what happened to a prior run's checkpoint at 785000 steps.
+    Save to a temp path first and rename into place, which is atomic on the
+    same filesystem, so a checkpoint file is either the old one or a complete
+    new one, never a partial write.
+    """
+
+    def _on_step(self) -> bool:
+        if self.n_calls % self.save_freq != 0:
+            return True
+        final_path = self._checkpoint_path(extension='zip')
+        tmp_path = final_path + '.tmp'
+        self.model.save(tmp_path)
+        os.replace(tmp_path, final_path)
+        if self.verbose >= 2:
+            print(f"Saving model checkpoint to {final_path}")
+        return True
+
+
 class SaveVecNormalizeCallback(BaseCallback):
     """Save VecNormalize stats and replay buffer alongside every model checkpoint."""
 
@@ -267,10 +288,13 @@ def make_env(
     return _init
 
 
-# Base ROS domain ID for parallel worlds (20-29 avoids conflict with default 0)
-_MULTI_WORLD_BASE_DOMAIN = 20
-_SINGLE_WORLD_TRAIN_PARTITION = 'sim_0'
-_SINGLE_WORLD_EVAL_PARTITION = 'sim_1'
+# Base ROS domain ID for parallel worlds (20-29 avoids conflict with default 0).
+# Overridable so a second training run (e.g. a different policy_arch experiment)
+# can share the machine without colliding on ROS domain / Gazebo transport with
+# a run already using the defaults.
+_MULTI_WORLD_BASE_DOMAIN = int(os.environ.get('PICKPLACE_DOMAIN_BASE', 20))
+_SINGLE_WORLD_TRAIN_PARTITION = os.environ.get('PICKPLACE_TRAIN_PARTITION', 'sim_0')
+_SINGLE_WORLD_EVAL_PARTITION = os.environ.get('PICKPLACE_EVAL_PARTITION', 'sim_1')
 _DEFAULT_N_EVAL_EPISODES = 10
 
 
@@ -369,7 +393,7 @@ def train(total_timesteps=500000, save_dir='./models', n_envs=1, load_model=None
 
     ckpt_freq = max(10000 // n_envs, 1)
     eval_freq = max(10000 // n_envs, 1)
-    checkpoint_callback = CheckpointCallback(
+    checkpoint_callback = AtomicCheckpointCallback(
         save_freq=ckpt_freq,
         save_path=save_dir,
         name_prefix='pickplace_model'

@@ -53,10 +53,12 @@ ALGO="tqc"
 POLICY_ARCH="mlp"
 ADAPTIVE_CURRICULUM=false
 WORLD="pickplace_world.world"
-TRAIN_DOMAIN=20
-TRAIN_PARTITION="sim_0"
-EVAL_DOMAIN=21
-EVAL_PARTITION="sim_1"
+# Overridable via env so a second concurrent run (e.g. a different --policy-arch
+# experiment) can use a disjoint ROS domain / Gazebo transport partition.
+TRAIN_DOMAIN="${PICKPLACE_DOMAIN_BASE:-20}"
+TRAIN_PARTITION="${PICKPLACE_TRAIN_PARTITION:-sim_0}"
+EVAL_DOMAIN=$((TRAIN_DOMAIN + 1))
+EVAL_PARTITION="${PICKPLACE_EVAL_PARTITION:-sim_1}"
 GAZEBO_PID=""
 EVAL_GAZEBO_PID=""
 TRAIN_PID=""
@@ -176,6 +178,8 @@ sleep 8
 
 if [ -n "$MODEL_PATH" ]; then
     env ROS_DOMAIN_ID=$TRAIN_DOMAIN GZ_PARTITION=$TRAIN_PARTITION \
+        PICKPLACE_DOMAIN_BASE=$TRAIN_DOMAIN PICKPLACE_TRAIN_PARTITION=$TRAIN_PARTITION \
+        PICKPLACE_EVAL_PARTITION=$EVAL_PARTITION \
     ros2 launch pickplace_rl_mobile rl_train.launch.py \
         load_model:="$MODEL_PATH" \
         timesteps:="$TIMESTEPS" \
@@ -186,6 +190,8 @@ if [ -n "$MODEL_PATH" ]; then
         adaptive_curriculum:="$ADAPTIVE_CURRICULUM" &
 else
     env ROS_DOMAIN_ID=$TRAIN_DOMAIN GZ_PARTITION=$TRAIN_PARTITION \
+        PICKPLACE_DOMAIN_BASE=$TRAIN_DOMAIN PICKPLACE_TRAIN_PARTITION=$TRAIN_PARTITION \
+        PICKPLACE_EVAL_PARTITION=$EVAL_PARTITION \
     ros2 launch pickplace_rl_mobile rl_train.launch.py \
         timesteps:="$TIMESTEPS" \
         save_dir:="$SAVE_DIR" \
