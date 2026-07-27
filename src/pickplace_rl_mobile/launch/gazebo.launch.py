@@ -39,13 +39,17 @@ def resolve_gz_ros2_control_lib_dir():
     ROS Humble's default gz_ros2_control doesn't support the Gazebo Harmonic
     system-plugin ABI this project needs, so it's built in a sibling
     workspace rather than this one. Checks an env override first, then the
-    conventional sibling-workspace location relative to the current user's
-    home directory (portable across machines/usernames), and fails loudly
-    with a clear fix instead of silently pointing Gazebo at a missing path.
+    conventional sibling-workspace location relative to the real user's home
+    directory (portable across machines/usernames). Uses ORIGINAL_HOME over
+    plain HOME/expanduser('~') because run_rl_training.sh sandboxes HOME to a
+    throwaway runtime dir for headless training, which would otherwise point
+    this at a directory that never existed. Fails loudly with a clear fix
+    instead of silently pointing Gazebo at a missing path.
     """
     override = os.environ.get('GZ_ROS2_CONTROL_INSTALL_DIR')
     candidates = [override] if override else []
-    candidates.append(os.path.expanduser('~/UR3_ROS2_PICK_AND_PLACE/install/gz_ros2_control'))
+    home = os.environ.get('ORIGINAL_HOME') or os.path.expanduser('~')
+    candidates.append(os.path.join(home, 'UR3_ROS2_PICK_AND_PLACE', 'install', 'gz_ros2_control'))
     for prefix in candidates:
         lib_dir = os.path.join(prefix, 'lib')
         if os.path.isdir(lib_dir):
