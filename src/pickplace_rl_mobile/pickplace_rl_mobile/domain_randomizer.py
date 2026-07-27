@@ -11,6 +11,7 @@ to improve policy robustness and sim-to-real transferability:
 """
 
 import numpy as np
+from collections import deque
 from dataclasses import dataclass, field
 from typing import Tuple
 
@@ -50,6 +51,18 @@ class RandomizationConfig:
     # Action noise (for robustness)
     action_noise_std: float = 0.02
 
+    # Action-execution latency (control-loop/actuation lag), in env steps
+    action_latency_steps_range: Tuple[int, int] = (0, 1)
+    randomize_action_latency: bool = False
+
+    # Perceived object position noise/latency, standing in for a real camera-based
+    # estimator instead of Gazebo ground truth. Only fed into the observation —
+    # reward/success logic keeps using ground truth so training signal stays correct.
+    perception_pos_noise_std: float = 0.01  # meters
+    perception_latency_steps_range: Tuple[int, int] = (0, 2)
+    randomize_perception_noise: bool = False
+    randomize_perception_latency: bool = False
+
     # Gravity noise
     gravity_noise_std: float = 0.02  # m/s^2
 
@@ -87,6 +100,8 @@ class DomainRandomizer:
         self.config = config or RandomizationConfig()
         self.rng = np.random.default_rng()
         self.current_episode_params = {}
+        self._action_buffer = deque()
+        self._perception_buffer = deque()
         self._randomize_episode_params()
 
     def seed(self, seed: int):
@@ -124,6 +139,22 @@ class DomainRandomizer:
         else:
             shape = cfg.object_shapes[0] if cfg.object_shapes else 'box'
 
+        # Latency values stay fixed for the episode (a real control loop/perception
+        # pipeline doesn't change its lag mid-episode); buffers reset so last episode's
+        # queued actions/estimates don't leak into the new one.
+        if cfg.randomize_action_latency:
+            action_latency_steps = int(self.rng.integers(
+                cfg.action_latency_steps_range[0], cfg.action_latency_steps_range[1] + 1))
+        else:
+            action_latency_steps = 0
+        if cfg.randomize_perception_latency:
+            perception_latency_steps = int(self.rng.integers(
+                cfg.perception_latency_steps_range[0], cfg.perception_latency_steps_range[1] + 1))
+        else:
+            perception_latency_steps = 0
+        self._action_buffer.clear()
+        self._perception_buffer.clear()
+
         self.current_episode_params = {
             'obj_scale': scale,
             'obj_size': cfg.nominal_obj_size * scale,
@@ -134,6 +165,8 @@ class DomainRandomizer:
             'friction': friction,
             'gravity_noise': gravity_noise,
             'shape': shape,
+            'action_latency_steps': action_latency_steps,
+            'perception_latency_steps': perception_latency_steps,
         }
 
     def randomize_object_position(self) -> np.ndarray:
@@ -193,6 +226,37 @@ class DomainRandomizer:
         noisy_action = action + self.rng.normal(
             0, self.config.action_noise_std, action.shape)
         return np.clip(noisy_action, -1.0, 1.0)
+
+    def apply_action_latency(self, action: np.ndarray) -> np.ndarray:
+        """Delay actions by this episode's sampled lag to emulate actuator/control-loop
+        latency: the action actually executed now is one commanded a few steps ago."""
+        steps = self.current_episode_params.get('action_latency_steps', 0)
+        if steps <= 0:
+            return action
+        self._action_buffer.append(np.array(action, copy=True))
+        if len(self._action_buffer) > steps:
+            return self._action_buffer.popleft()
+        return self._action_buffer[0]
+
+    def perceive_object_position(self, true_pos: np.ndarray) -> np.ndarray:
+        """Return a noisy, latency-delayed estimate of the object position, standing in
+        for a real camera-based perception pipeline instead of Gazebo ground truth.
+
+        Intended for observation construction only — reward/success checks should keep
+        using ground truth so the training signal doesn't degrade along with perception.
+        """
+        cfg = self.config
+        pos = np.array(true_pos, dtype=np.float64, copy=True)
+        if cfg.randomize_perception_noise:
+            pos = pos + self.rng.normal(0, cfg.perception_pos_noise_std, pos.shape)
+
+        steps = self.current_episode_params.get('perception_latency_steps', 0)
+        if steps <= 0:
+            return pos
+        self._perception_buffer.append(pos)
+        if len(self._perception_buffer) > steps:
+            return self._perception_buffer.popleft()
+        return self._perception_buffer[0]
 
     def reset_episode(self):
         """Call at the start of each episode to re-randomize per-episode params."""

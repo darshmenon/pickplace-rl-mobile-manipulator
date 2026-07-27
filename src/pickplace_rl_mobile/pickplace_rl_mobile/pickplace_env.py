@@ -227,6 +227,9 @@ class PickPlaceEnv(gym.Env):
                 randomize_target_pos=True,
                 randomize_observations=True,
                 randomize_actions=True,
+                randomize_action_latency=True,
+                randomize_perception_noise=True,
+                randomize_perception_latency=True,
                 randomize_object_size=True,
                 randomize_object_color=True,
                 randomize_physics=True,
@@ -499,7 +502,13 @@ class PickPlaceEnv(gym.Env):
 
     def get_observation(self) -> np.ndarray:
         ee_pos = self.get_global_ee_pos()
-        obj_pos = self.real_object_pos if self.real_object_pos is not None else self.object_pos
+        true_obj_pos = self.real_object_pos if self.real_object_pos is not None else self.object_pos
+        # Observation sees a perception estimate (noisy/latent), not ground truth —
+        # reward and grasp-verification logic elsewhere still use true_obj_pos directly.
+        obj_pos = (
+            self.randomizer.perceive_object_position(true_obj_pos)
+            if self.randomizer is not None else true_obj_pos
+        )
         # ee_to_obj: direct tracking vector — if the object moves, this updates instantly
         ee_to_obj = obj_pos - ee_pos
         ee_to_target = self.target_pos - ee_pos
@@ -875,6 +884,7 @@ class PickPlaceEnv(gym.Env):
         action = np.asarray(action, dtype=np.float32)
         if self.randomizer is not None:
             action = self.randomizer.add_action_noise(action)
+            action = self.randomizer.apply_action_latency(action)
 
         # Position delta control: target = current + delta, then P-drive toward target.
         # Max delta per step = 0.25 rad → faster reach toward object.
