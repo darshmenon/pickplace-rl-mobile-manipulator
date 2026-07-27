@@ -337,13 +337,13 @@ Checkpoints save every 10 k steps to `./rl_models/`. The best eval checkpoint is
 
 | Artifact | Status |
 |----------|--------|
-| Latest numbered checkpoint | `rl_models/pickplace_model_935000_steps.zip` |
+| Latest numbered checkpoint | `rl_models/pickplace_model_785000_steps.zip` |
 | Best eval checkpoint | `rl_models/best_model/best_model.zip` |
 | Latest eval file | `rl_models/evaluations.npz` |
-| Last recorded eval step | `765000` |
-| Best recorded mean eval reward | **+2874.65** |
+| Last recorded eval step | `775000` |
+| Last recorded mean eval reward | **-302.44** |
 
-The policy has crossed into positive mean eval reward — verified grasps and lifts are occurring consistently. Full end-to-end place success (phase 5) is the remaining target.
+Eval reward and the training-reward scale were realigned (see "Align TQC training and evaluation behavior"), so this number isn't directly comparable to older reward figures — treat it as a fresh baseline. Grasping and lifting (phases 2-3) are consistently reached in training rollouts; full end-to-end place success (phase 5) under the harder curriculum-stage-0 (full task) setting is the current focus.
 
 ---
 
@@ -364,8 +364,14 @@ The current trainer resumes from checkpoints, restores VecNormalize stats, reloa
 | `gradient_steps=4` | 2× more updates per env step; faster convergence |
 | Verified grasp reward +1000 | Only awarded once the real Gazebo object actually lifts |
 | Grasp verification | Real-object lift verification over a 30-step window prevents reward hacking |
+| Action/perception latency randomization | Episode-sampled delay on executed actions and on the perceived object position (`domain_randomizer.py`), so the policy tolerates real actuator/control-loop lag and camera-pipeline latency instead of only ever seeing instant, ground-truth state |
+| Perception noise separated from reward | The observation sees a noisy estimate of object position; reward/grasp-verification logic still uses Gazebo ground truth, so training signal quality doesn't degrade along with simulated perception |
+| Transformer policy option | `--policy-arch transformer` tokenizes the observation into named groups (joints, EE pos, object pos, ...) and self-attends over them instead of a flat MLP; requires a fresh model, not resumable from an MLP checkpoint |
+| Atomic checkpoint saves | Numbered checkpoints save to a temp file and rename into place, so a killed process can no longer leave a truncated, unloadable `*_steps.zip` |
 
 Training rollouts use annealed approach/transport assist, but evaluation environments disable assist by default so best-model selection reflects the learned policy.
+
+Concurrent experiments (e.g. comparing `--policy-arch mlp` vs `transformer`) can share the machine without colliding: set `PICKPLACE_DOMAIN_BASE`, `PICKPLACE_TRAIN_PARTITION`, `PICKPLACE_EVAL_PARTITION`, and `PICKPLACE_RUNTIME_ROOT` to disjoint values per run, and give each a separate `--save-dir`.
 
 ---
 

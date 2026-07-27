@@ -33,6 +33,30 @@ def resolve_package_uris(urdf_str):
     return re.sub(r'\$\(find\s+([^)]+)\)', replace_find, urdf_str)
 
 
+def resolve_gz_ros2_control_lib_dir():
+    """Locate the Harmonic-compatible gz_ros2_control build.
+
+    ROS Humble's default gz_ros2_control doesn't support the Gazebo Harmonic
+    system-plugin ABI this project needs, so it's built in a sibling
+    workspace rather than this one. Checks an env override first, then the
+    conventional sibling-workspace location relative to the current user's
+    home directory (portable across machines/usernames), and fails loudly
+    with a clear fix instead of silently pointing Gazebo at a missing path.
+    """
+    override = os.environ.get('GZ_ROS2_CONTROL_INSTALL_DIR')
+    candidates = [override] if override else []
+    candidates.append(os.path.expanduser('~/UR3_ROS2_PICK_AND_PLACE/install/gz_ros2_control'))
+    for prefix in candidates:
+        lib_dir = os.path.join(prefix, 'lib')
+        if os.path.isdir(lib_dir):
+            return prefix, lib_dir
+    raise RuntimeError(
+        "Could not find a Harmonic-compatible gz_ros2_control install (checked "
+        f"{candidates}). Set GZ_ROS2_CONTROL_INSTALL_DIR to its install prefix "
+        "(the directory containing lib/)."
+    )
+
+
 def get_pickplace_share_dir():
     """Resolve the active pickplace package share dir without trusting a stale ament entry."""
     launch_dir = os.path.dirname(os.path.abspath(__file__))
@@ -81,8 +105,7 @@ def generate_launch_description():
     urdf_path = os.path.join(pkg_dir, 'urdf', 'mobile_ur3.urdf')
     ur_description_share = get_package_share_directory('ur_description')
     robotiq_share = get_package_share_directory('robotiq_2f_85_gripper_visualization')
-    harmonic_gz_control_prefix = '/home/asimov/UR3_ROS2_PICK_AND_PLACE/install/gz_ros2_control'
-    harmonic_gz_control_lib = '/home/asimov/UR3_ROS2_PICK_AND_PLACE/install/gz_ros2_control/lib'
+    harmonic_gz_control_prefix, harmonic_gz_control_lib = resolve_gz_ros2_control_lib_dir()
 
     with open(urdf_path, 'r') as f:
         raw_urdf = f.read()
