@@ -1,0 +1,1051 @@
+#!/usr/bin/env python3
+"""
+Backend-agnostic core of the pick-and-place RL environment.
+
+Everything here is pure numpy over cached state (joint_positions, base_pose,
+real_object_pos, ...) with no simulator calls, so the same reward function,
+observation construction, curriculum logic, and control law run identically
+whether the state is populated from Gazebo (via ROS topics) or from MuJoCo
+(read directly off MjData). That identity is what makes a policy trained on
+one backend meaningfully transferable to the other — see PickPlaceEnv
+(pickplace_env.py, Gazebo) and PickPlaceEnvMuJoCo (pickplace_env_mujoco.py).
+
+A concrete subclass must implement the backend hooks marked NotImplementedError
+below: _drive_arm, _drive_gripper, _drive_base, _advance_physics,
+_refresh_state, _spawn_object, _respawn_object_randomized, _randomize_gravity,
+_wait_until_ready, close.
+"""
+
+import numpy as np
+import gymnasium as gym
+from gymnasium import spaces
+from pickplace_rl_mobile.domain_randomizer import DomainRandomizer, RandomizationConfig
+
+# UR3 DH parameters: (a_m, d_m, alpha_rad) per joint
+# Source: ur_description/config/ur3/default_kinematics.yaml
+_UR3_DH = [
+    (0.0,      0.1519,  np.pi / 2),   # shoulder_pan
+    (-0.24365, 0.0,     0.0),          # shoulder_lift
+    (-0.21325, 0.0,     0.0),          # elbow
+    (0.0,      0.11235, np.pi / 2),   # wrist_1
+    (0.0,      0.08535, -np.pi / 2),  # wrist_2
+    (0.0,      0.0819,  0.0),          # wrist_3
+]
+
+# UR3 joint limits (rad) — clamp targets to these to prevent windup
+_UR3_JOINT_LOW  = np.array([-2*np.pi, -2*np.pi, -np.pi,    -2*np.pi, -2*np.pi, -2*np.pi])
+_UR3_JOINT_HIGH = np.array([ 2*np.pi,  2*np.pi,  np.pi,     2*np.pi,  2*np.pi,  2*np.pi])
+
+# Height of the platform surface the pickup object rests on (m)
+_PLATFORM_TOP = 0.10
+
+# Arm base_link offset from chassis_link (from URDF chassis_to_arm_base joint)
+_ARM_MOUNT_XYZ = np.array([0.0, 0.0, 0.1])
+
+# Approach-assist annealing horizon — assist blends from 1.0 → 0 over this many steps.
+# Long enough that the policy can reliably grasp before flying solo.
+_ANNEAL_STEPS = 1_000_000
+
+# Robot spawn height (chassis z at spawn)
+_BASE_SPAWN_Z = 0.08
+
+
+def _dh_transform(theta: float, d: float, a: float, alpha: float) -> np.ndarray:
+    ct, st = np.cos(theta), np.sin(theta)
+    ca, sa = np.cos(alpha), np.sin(alpha)
+    return np.array([
+        [ct, -st * ca,  st * sa, a * ct],
+        [st,  ct * ca, -ct * sa, a * st],
+        [0.0,      sa,      ca,      d],
+        [0.0,     0.0,     0.0,    1.0],
+    ])
+
+
+def ur3_fk(joint_angles: np.ndarray) -> np.ndarray:
+    """Return EE position (x, y, z) in the arm base_link frame using UR3 DH params."""
+    T = np.eye(4)
+    for i, (a, d, alpha) in enumerate(_UR3_DH):
+        T = T @ _dh_transform(joint_angles[i], d, a, alpha)
+    return T[:3, 3]
+
+
+_GRIPPER_MIMIC_MULTIPLIERS = {
+    'left_inner_knuckle_joint': 1.0,
+    'left_inner_finger_joint': -1.0,
+    'right_outer_knuckle_joint': -1.0,
+    'right_inner_knuckle_joint': 1.0,
+    'right_inner_finger_joint': -1.0,
+}
+
+
+class PickPlaceEnvBase(gym.Env):
+    """
+    Gymnasium environment for pick-and-place RL training.
+
+    Observation (46): [joint_pos(6), joint_vel(6), finger_pos(1), ee_pos(3), obj_pos(3),
+                       ee_to_obj(3), ee_to_target(3), obj_to_target(3),
+                       obj_in_base(3), gripper_error(1), grasped(1), phase(1),
+                       base_pose(3), prev_action(9)]
+    Action (9):       [joint_vels(6), gripper(1), base_linear(1), base_angular(1)]
+
+    ee_to_obj = obj_pos - ee_pos is the direct tracking vector: if the object moves,
+    this immediately reflects the new direction/distance the arm needs to travel.
+    """
+
+    def __init__(
+        self,
+        curriculum_stage=0,
+        observation_mode='full',
+        enable_domain_randomization=True,
+        enable_assist=True,
+    ):
+        super().__init__()
+        self.curriculum_stage = int(curriculum_stage)
+        self._pending_curriculum_stage = None
+        self._pending_randomization_level = None
+        self.observation_mode = observation_mode
+        self.enable_domain_randomization = bool(enable_domain_randomization)
+        self.enable_assist = bool(enable_assist)
+
+        # Action space: 6 arm joints + 1 gripper + 2 base (linear, angular)
+        self.action_space = spaces.Box(
+            low=-1.0,
+            high=1.0,
+            shape=(9,),
+            dtype=np.float32
+        )
+
+        # Observation space: full mode keeps the richer 46-dim state used by newer
+        # runs, while legacy27 preserves compatibility with older checkpoints.
+        obs_dim = 27 if self.observation_mode == 'legacy27' else 46
+        self.observation_space = spaces.Box(
+            low=-np.inf,
+            high=np.inf,
+            shape=(obs_dim,),
+            dtype=np.float32
+        )
+
+        # State variables
+        # Layout: shoulder_pan[0], shoulder_lift[1], elbow[2],
+        #   wrist_1[3], wrist_2[4], wrist_3[5], finger_joint[6], left_wheel[7], right_wheel[8]
+        self.joint_positions = np.zeros(9)
+        self.joint_velocities = np.zeros(9)
+        self._joint_states_received = False
+        self._joint_state_position_map = {}
+        self._joint_state_velocity_map = {}
+        self.base_pose = np.zeros(3)  # x, y, theta
+        self.episode_steps = 0
+        self.max_episode_steps = self.episode_step_limit()
+
+        # Targets
+        self.object_start_pos = np.array([0.6, 0.0, 0.1325])  # world frame — on top of platform
+        self.target_pos = np.array([0.6, 0.5, 0.15])
+        self.object_pos = self.object_start_pos.copy()
+        self.object_grasped = False
+        self.grasp_verified = False
+        self.real_object_pos = None  # updated from the backend's live simulation state
+        self.grasp_verify_steps = 0
+        self.grasp_attempts = 0
+        self.verified_grasps = 0
+        self.max_phase_reached = 0
+        self.last_dist_to_obj = np.inf
+        self.episode_success = False
+        self.stage_success = False
+
+        self.current_phase = 0
+        self.prev_distance = None
+        self.prev_action = np.zeros(self.action_space.shape[0], dtype=np.float32)
+        self._global_steps = 0  # total env steps across all episodes, used for assist annealing
+        self._success_history = []  # rolling window for success rate logging
+        self.randomizer = None
+        if self.enable_domain_randomization:
+            self.randomizer = DomainRandomizer(RandomizationConfig(
+                obj_x_range=(0.45, 0.75),
+                obj_y_range=(-0.15, 0.15),
+                obj_z_base=0.1325,
+                target_x_range=(0.45, 0.75),
+                target_y_range=(0.3, 0.6),
+                target_z=float(self.target_pos[2]),
+                randomize_target_pos=True,
+                randomize_observations=True,
+                randomize_actions=True,
+                randomize_action_latency=True,
+                randomize_perception_noise=True,
+                randomize_perception_latency=True,
+                randomize_object_size=True,
+                randomize_object_color=True,
+                randomize_physics=True,
+            ))
+            self._apply_stage_randomization(self.curriculum_stage)
+
+    # ------------------------------------------------------------------
+    # Backend hooks — a concrete subclass must implement these.
+    # ------------------------------------------------------------------
+
+    def _drive_arm(self, target_positions: np.ndarray, dt: float) -> None:
+        """Command the 6 arm joints toward target_positions (rad), to be reached over dt seconds."""
+        raise NotImplementedError
+
+    def _drive_gripper(self, target_open_frac: float) -> None:
+        """Command the gripper toward target_open_frac (0=open, ~0.8=closed)."""
+        raise NotImplementedError
+
+    def _drive_base(self, linear: float, angular: float) -> None:
+        """Command the mobile base at (linear m/s, angular rad/s)."""
+        raise NotImplementedError
+
+    def _advance_physics(self, dt: float) -> None:
+        """Let the backend's simulation/controllers run for dt seconds."""
+        raise NotImplementedError
+
+    def _refresh_state(self) -> None:
+        """Pull fresh joint_positions/joint_velocities/base_pose/real_object_pos from the backend."""
+        raise NotImplementedError
+
+    def _spawn_object(self, x, y, z) -> None:
+        raise NotImplementedError
+
+    def _respawn_object_randomized(self, x, y, z) -> float:
+        """Recreate the pickup object with this episode's randomized shape/size/mass/friction/color.
+        Returns the actual spawn z (may depend on randomized size)."""
+        raise NotImplementedError
+
+    def _randomize_gravity(self) -> None:
+        raise NotImplementedError
+
+    def _wait_until_ready(self) -> None:
+        """Block until the backend has delivered at least one state reading."""
+        raise NotImplementedError
+
+    def close(self):
+        raise NotImplementedError
+
+    # ------------------------------------------------------------------
+    # Pure kinematics / control-law helpers — identical on every backend.
+    # ------------------------------------------------------------------
+
+    def get_end_effector_pos(self) -> np.ndarray:
+        """EE position in robot chassis frame using UR3 DH FK.
+        The URDF has a 180° yaw on base_link_inertia so the arm faces +x of chassis.
+        FK gives EE in arm-base frame (arm faces -x before rotation), so flip x,y.
+        """
+        ee_in_arm_base = ur3_fk(self.joint_positions[:6])
+        # Account for 180° yaw: x→-x, y→-y (arm faces forward after flip)
+        ee_flipped = np.array([-ee_in_arm_base[0], -ee_in_arm_base[1], ee_in_arm_base[2]])
+        return _ARM_MOUNT_XYZ + ee_flipped
+
+    def get_global_ee_pos(self) -> np.ndarray:
+        """Transform local EE pos to world frame using odometry."""
+        local_ee = self.get_end_effector_pos()
+        bx, by, btheta = self.base_pose
+        gx = bx + local_ee[0] * np.cos(btheta) - local_ee[1] * np.sin(btheta)
+        gy = by + local_ee[0] * np.sin(btheta) + local_ee[1] * np.cos(btheta)
+        gz = _BASE_SPAWN_Z + local_ee[2]
+        return np.array([gx, gy, gz])
+
+    def _ee_world_from_joints(self, joint_angles: np.ndarray) -> np.ndarray:
+        ee_in_arm_base = ur3_fk(joint_angles[:6])
+        ee_flipped = np.array([-ee_in_arm_base[0], -ee_in_arm_base[1], ee_in_arm_base[2]])
+        local_ee = _ARM_MOUNT_XYZ + ee_flipped
+        bx, by, btheta = self.base_pose
+        return np.array([
+            bx + local_ee[0] * np.cos(btheta) - local_ee[1] * np.sin(btheta),
+            by + local_ee[0] * np.sin(btheta) + local_ee[1] * np.cos(btheta),
+            _BASE_SPAWN_Z + local_ee[2],
+        ])
+
+    def _ee_jacobian_world(self) -> np.ndarray:
+        """Numerical EE position Jacobian in world frame for stable approach assist."""
+        q = self.joint_positions[:6].astype(float).copy()
+        base_pos = self._ee_world_from_joints(q)
+        jac = np.zeros((3, 6), dtype=np.float64)
+        eps = 1e-4
+        for i in range(6):
+            q_step = q.copy()
+            q_step[i] += eps
+            jac[:, i] = (self._ee_world_from_joints(q_step) - base_pos) / eps
+        return jac
+
+    def _approach_assist_joint_vels(self) -> np.ndarray:
+        """
+        Small Cartesian pull toward the current curriculum target.
+
+        The RL action remains in charge, but this removes the dead-start problem where
+        phase 1 never reaches the object closely enough to expose phase 2 grasp rewards.
+        """
+        if not self.enable_assist or self.current_phase not in [1, 2]:
+            return np.zeros(6, dtype=np.float32)
+
+        obj_pos = self.real_object_pos if self.real_object_pos is not None else self.object_pos
+        ee_pos = self.get_global_ee_pos()
+        target = obj_pos.copy()
+        if self.current_phase == 1:
+            target[2] = obj_pos[2] if obj_pos[2] > 0.02 else 0.055
+
+        error = target - ee_pos
+        error_norm = float(np.linalg.norm(error))
+        if error_norm < 0.025:
+            return np.zeros(6, dtype=np.float32)
+
+        desired_ee_vel = np.clip(error * 3.5, -0.35, 0.35)
+        jac = self._ee_jacobian_world()
+        damping = 0.04
+        jj_t = jac @ jac.T
+        joint_vels = jac.T @ np.linalg.solve(jj_t + (damping ** 2) * np.eye(3), desired_ee_vel)
+        return np.clip(joint_vels, -0.65, 0.65).astype(np.float32)
+
+    def _transport_assist_base_vels(self) -> tuple[float, float]:
+        """Gentle base guidance toward target during phase 4 transport.
+
+        Returns (linear, angular) velocity assists in [-1, 1] scale (pre-scaling).
+        Anneals to zero over the same window as approach assist.
+        """
+        if not self.enable_assist or self.current_phase != 4:
+            return 0.0, 0.0
+        assist_scale = max(0.0, 1.0 - self._global_steps / _ANNEAL_STEPS)
+        if assist_scale < 0.05:
+            return 0.0, 0.0
+
+        bx, by, btheta = self.base_pose
+        tx, ty = self.target_pos[:2]
+        dx, dy = tx - bx, ty - by
+        dist = float(np.hypot(dx, dy))
+        if dist < 0.10:
+            return 0.0, 0.0
+
+        desired_angle = float(np.arctan2(dy, dx))
+        angle_err = desired_angle - btheta
+        while angle_err > np.pi:  angle_err -= 2 * np.pi
+        while angle_err < -np.pi: angle_err += 2 * np.pi
+
+        # Turn first if badly misaligned, otherwise drive forward
+        if abs(angle_err) > 0.4:
+            angular = np.clip(angle_err * 1.5, -0.8, 0.8) * assist_scale
+            return 0.0, float(angular)
+        linear = np.clip(dist * 1.0, 0.0, 0.6) * assist_scale
+        angular = np.clip(angle_err * 2.0, -0.5, 0.5) * assist_scale
+        return float(linear), float(angular)
+
+    def world_to_base_vector(self, vec_world: np.ndarray) -> np.ndarray:
+        """Rotate a world-frame vector into the base frame using odometry yaw."""
+        btheta = self.base_pose[2]
+        return np.array([
+            vec_world[0] * np.cos(btheta) + vec_world[1] * np.sin(btheta),
+            -vec_world[0] * np.sin(btheta) + vec_world[1] * np.cos(btheta),
+            vec_world[2],
+        ])
+
+    def world_point_to_base(self, point_world: np.ndarray) -> np.ndarray:
+        """Express a world-frame point relative to the robot base frame."""
+        base_world = np.array([self.base_pose[0], self.base_pose[1], _BASE_SPAWN_Z])
+        return self.world_to_base_vector(point_world - base_world)
+
+    def curriculum_target_phase(self) -> int:
+        stage_targets = {
+            0: 5,  # full task
+            1: 2,  # reach/alignment
+            2: 3,  # verified grasp
+            3: 4,  # lift
+            4: 5,  # transport
+            5: 5,  # full placement
+        }
+        return stage_targets.get(self.curriculum_stage, 5)
+
+    def episode_step_limit(self) -> int:
+        """Shorter early-stage episodes improve reset rate and sample efficiency."""
+        limits = {
+            0: 1500,  # full task — scripted pregrasp takes ~300 steps, need room for all 5 phases
+            1: 150,   # reach/alignment only
+            2: 250,   # grasp attempts
+            3: 350,   # verified grasp + lift
+            4: 700,   # transport almost-full task
+            5: 1000,
+        }
+        return limits.get(self.curriculum_stage, 1000)
+
+    # Randomization ranges widen as curriculum advances — early stages stay narrow so the
+    # policy can learn the basic motion before facing the full distribution.
+    _STAGE_RANDOMIZATION = {
+        0: dict(obj_x_range=(0.45, 0.75), obj_y_range=(-0.15, 0.15), randomize_target_pos=True),
+        1: dict(obj_x_range=(0.57, 0.63), obj_y_range=(-0.03, 0.03), randomize_target_pos=False),
+        2: dict(obj_x_range=(0.54, 0.66), obj_y_range=(-0.06, 0.06), randomize_target_pos=False),
+        3: dict(obj_x_range=(0.50, 0.70), obj_y_range=(-0.10, 0.10), randomize_target_pos=False),
+        4: dict(obj_x_range=(0.47, 0.73), obj_y_range=(-0.13, 0.13), randomize_target_pos=True),
+        5: dict(obj_x_range=(0.45, 0.75), obj_y_range=(-0.15, 0.15), randomize_target_pos=True),
+    }
+
+    def _apply_stage_randomization(self, stage: int) -> None:
+        if self.randomizer is None:
+            return
+        params = self._STAGE_RANDOMIZATION.get(stage, self._STAGE_RANDOMIZATION[0])
+        self.randomizer.config.obj_x_range = params['obj_x_range']
+        self.randomizer.config.obj_y_range = params['obj_y_range']
+        self.randomizer.config.randomize_target_pos = params['randomize_target_pos']
+
+    def set_curriculum_stage(self, curriculum_stage: int) -> None:
+        """Queue curriculum changes so they take effect cleanly on the next reset."""
+        next_stage = int(curriculum_stage)
+        if next_stage == self.curriculum_stage:
+            self._pending_curriculum_stage = None
+            return
+        self._pending_curriculum_stage = next_stage
+
+    def set_randomization_level(self, level: float) -> None:
+        """Queue an Automatic Domain Randomization level (see ADRCallback in
+        train_rl.py) so it takes effect cleanly on the next reset, like curriculum stage."""
+        if self.randomizer is None:
+            return
+        self._pending_randomization_level = float(level)
+
+    def curriculum_completed(self) -> bool:
+        if self.curriculum_stage <= 0:
+            return self.episode_success
+        if self.curriculum_stage == 1:
+            return self.current_phase >= 2
+        if self.curriculum_stage == 2:
+            return self.grasp_verified or self.verified_grasps > 0
+        if self.curriculum_stage == 3:
+            return self.current_phase >= 4
+        if self.curriculum_stage == 4:
+            return self.current_phase >= 5
+        return self.episode_success
+
+    def get_observation(self) -> np.ndarray:
+        ee_pos = self.get_global_ee_pos()
+        true_obj_pos = self.real_object_pos if self.real_object_pos is not None else self.object_pos
+        # Observation sees a perception estimate (noisy/latent), not ground truth —
+        # reward and grasp-verification logic elsewhere still use true_obj_pos directly.
+        obj_pos = (
+            self.randomizer.perceive_object_position(true_obj_pos)
+            if self.randomizer is not None else true_obj_pos
+        )
+        # ee_to_obj: direct tracking vector — if the object moves, this updates instantly
+        ee_to_obj = obj_pos - ee_pos
+        ee_to_target = self.target_pos - ee_pos
+        obj_to_target = self.target_pos - obj_pos
+        obj_in_base = self.world_point_to_base(obj_pos)
+        desired_gripper_pos = 0.8 if self.current_phase in [2, 3, 4] else 0.0
+        gripper_error = abs(self.joint_positions[6] - desired_gripper_pos)
+        full_obs = np.concatenate([
+            self.joint_positions[:6],    # arm joint positions
+            self.joint_velocities[:6],   # arm joint velocities
+            [self.joint_positions[6]],   # finger_joint position
+            ee_pos,                      # EE in world frame
+            obj_pos,                     # object in world frame (live from the backend)
+            ee_to_obj,                   # vector from EE to object — arm tracks this to zero
+            ee_to_target,                # vector from EE to final place target
+            obj_to_target,               # vector from object to final place target
+            obj_in_base,                 # object location in the base frame
+            [gripper_error],             # phase-aware gripper opening error
+            [float(self.object_grasped)],
+            [float(self.current_phase)],
+            self.base_pose,
+            self.prev_action,
+        ])
+        if self.observation_mode == 'legacy27':
+            obs = np.concatenate([
+                full_obs[:22],   # joints, EE/object positions, ee_to_obj
+                full_obs[32:34], # grasped, phase
+                full_obs[34:37], # base pose
+            ]).astype(np.float32)
+        else:
+            obs = full_obs.astype(np.float32)
+        if self.randomizer is not None:
+            obs = self.randomizer.add_observation_noise(obs)
+        return obs
+
+    def get_joint_position(self, joint_name: str, default=np.nan) -> float:
+        return float(self._joint_state_position_map.get(joint_name, default))
+
+    def get_joint_velocity(self, joint_name: str, default=np.nan) -> float:
+        return float(self._joint_state_velocity_map.get(joint_name, default))
+
+    def get_gripper_joint_snapshot(self) -> dict:
+        finger = self.get_joint_position('finger_joint', self.joint_positions[6])
+        snapshot = {
+            'finger_joint': finger,
+        }
+        for joint_name, multiplier in _GRIPPER_MIMIC_MULTIPLIERS.items():
+            pos = self.get_joint_position(joint_name)
+            snapshot[joint_name] = pos
+            snapshot[f'{joint_name}_tracking_error'] = abs(pos - finger * multiplier) if not np.isnan(pos) else np.nan
+        return snapshot
+
+    def wait(self, steps: int = 1, action: np.ndarray | None = None):
+        if action is None:
+            action = np.zeros(self.action_space.shape[0], dtype=np.float32)
+        obs = None
+        reward = 0.0
+        terminated = False
+        truncated = False
+        info = {}
+        for _ in range(steps):
+            obs, reward, terminated, truncated, info = self.step(action)
+            if terminated or truncated:
+                break
+        return obs, reward, terminated, truncated, info
+
+    def compute_reward(self):
+        reward = 0.0
+        terminated = False
+
+        gripper_pos = self.joint_positions[6]  # finger_joint: 0=open, ~0.8=closed
+        ee_global = self.get_global_ee_pos()
+        local_ee = self.get_end_effector_pos()
+        self.max_phase_reached = max(self.max_phase_reached, self.current_phase)
+
+        # Base tipping penalty: if robot falls over, base height deviates significantly
+        # Normal base z is ~0.08 (spawn height). If it tilts, z changes dramatically.
+        # Use odom-based check: if base is no longer upright
+        if len(self.joint_positions) > 0:
+            # If the arm joints show extreme values, the robot likely tipped
+            max_joint_vel = np.max(np.abs(self.joint_velocities[:6])) if len(self.joint_velocities) >= 6 else 0
+            if max_joint_vel > 10.0:  # abnormally high velocity = robot tumbling
+                return -500.0, True
+
+        # Collision penalty: arm crashes into ground (very low)
+        if ee_global[2] < 0.03 and self.current_phase not in [1, 2, 5]:
+            return -500.0, True
+
+        # Use real (ground-truth) object position when available (fixes fake-randomisation bug)
+        obj_pos = self.real_object_pos if self.real_object_pos is not None else self.object_pos
+
+        # Out-of-bounds penalty: robot wandered too far from target (avoid local optimum)
+        if np.linalg.norm(obj_pos[:2] - self.base_pose[:2]) > 1.5:
+            return -500.0, True
+
+        # Base-over-object penalty: chassis (38×38cm) has driven on top of the cube.
+        # Transform object into base frame and check against half-extents (0.19m each axis).
+        if not self.object_grasped:
+            bx, by, btheta = self.base_pose
+            dx = obj_pos[0] - bx
+            dy = obj_pos[1] - by
+            dx_local =  dx * np.cos(btheta) + dy * np.sin(btheta)
+            dy_local = -dx * np.sin(btheta) + dy * np.cos(btheta)
+            if abs(dx_local) < 0.225 and abs(dy_local) < 0.175:
+                return -300.0, True  # base crushed the object — end episode
+
+        # Arm-backward constraint: arm pointing behind chassis center risks self-collision.
+        # local_ee[0] < 0 means EE is behind the arm mount; < -0.10m is clearly bad.
+        if local_ee[0] < -0.10:
+            reward -= 5.0 + 20.0 * abs(local_ee[0] + 0.10)
+
+        # EE into ground constraint (tighter): during non-grasp phases EE should stay
+        # well above the floor (0.05m vs the hard 0.03m termination threshold).
+        if ee_global[2] < 0.05 and self.current_phase not in [1, 2, 5]:
+            reward -= 30.0 * (1.0 - ee_global[2] / 0.05)
+
+        if self.current_phase == 1:
+            # Phase 1: Lower arm to grasp height AND approach object XY
+            grasp_z = obj_pos[2] if obj_pos[2] > 0.02 else 0.055
+            dist_z = abs(ee_global[2] - grasp_z)
+            dist_xy = np.linalg.norm(ee_global[:2] - obj_pos[:2])
+            self.last_dist_to_obj = dist_xy
+            # Combined: reach grasp height + move EE toward object horizontally
+            dist_combined = dist_z + dist_xy * 1.0
+            if self.prev_distance is not None:
+                delta = self.prev_distance - dist_combined
+                reward += delta * 100.0 if delta > 0 else delta * 300.0  # 3× harsher when retreating
+            self.prev_distance = dist_combined
+
+            # Proximity bonus: reward staying near the object (not just approaching)
+            if dist_xy < 0.15:
+                reward += 5.0 * (1.0 - dist_xy / 0.15)
+
+            # Z-alignment bonus: reward being at the correct grasp height
+            if dist_z < 0.05:
+                reward += 4.0 * (1.0 - dist_z / 0.05)
+
+            # Extra bonus when BOTH xy and z are close simultaneously
+            if dist_xy < 0.08 and dist_z < 0.05:
+                reward += 8.0
+
+            # Penalise closing gripper during approach — it serves no purpose in phase 1
+            if gripper_pos > 0.5:
+                reward -= 2.0
+
+            # Transition once the gripper is close enough for the grasp phase to
+            # finish alignment. A slightly wider gate keeps training from getting
+            # stranded in approach-only episodes.
+            if dist_z < 0.12 and dist_xy < 0.20:
+                self.current_phase = 2
+                self.prev_distance = None
+                reward += 100.0
+
+        elif self.current_phase == 2:
+            # Phase 2: Approach object and grasp
+            ref_obj = self.real_object_pos if self.real_object_pos is not None else self.object_pos
+
+            # For a 6cm cube, side-grasp target = object center (EE at same height).
+            # No upward offset — fingers wrap around the sides at cube midpoint.
+            xy_dist = np.linalg.norm(ee_global[:2] - ref_obj[:2])
+            z_dist = abs(ee_global[2] - ref_obj[2])
+            dist_to_obj = np.linalg.norm(ee_global - ref_obj)
+            self.last_dist_to_obj = dist_to_obj
+
+            # Dense reward: guide EE toward object center
+            if self.prev_distance is not None:
+                delta = self.prev_distance - dist_to_obj
+                reward += delta * 100.0 if delta > 0 else delta * 400.0  # 4× harsher when retreating
+            self.prev_distance = dist_to_obj
+
+            # Proximity bonus: reward staying near object
+            if dist_to_obj < 0.10:
+                reward += 8.0 * (1.0 - dist_to_obj / 0.10)
+
+            # Touch-range bonus: EE is at the object surface (~3cm = half cube side)
+            if dist_to_obj < 0.04:
+                reward += 15.0 * (1.0 - dist_to_obj / 0.04)
+
+            # Very close bonus: within 3cm of center
+            if dist_to_obj < 0.03:
+                reward += 10.0
+
+            # Reward true side-grasp alignment explicitly so the policy doesn't
+            # learn to close while hovering high or offset.
+            if xy_dist < 0.05:
+                reward += 10.0 * (1.0 - xy_dist / 0.05)
+            if z_dist < 0.04:
+                reward += 8.0 * (1.0 - z_dist / 0.04)
+            if xy_dist < 0.04 and z_dist < 0.03:
+                reward += 12.0
+
+            # Reward gripper closing when already near object (actively encourage grasping)
+            if gripper_pos > 0.4 and xy_dist < 0.04 and z_dist < 0.03:
+                reward += 8.0 * gripper_pos  # more reward the more closed the gripper
+
+            # Penalty for opening gripper when very close (don't retreat from grasp)
+            if gripper_pos < 0.2 and dist_to_obj < 0.05:
+                reward -= 5.0
+
+            # Closing while vertically misaligned tends to smack or skim the cube
+            # instead of wrapping it, so make that behavior clearly unattractive.
+            if gripper_pos > 0.5 and z_dist > 0.04:
+                reward -= 10.0 * min(z_dist, 0.10)
+
+            # A close, closed gripper starts a lift attempt. The large grasp
+            # reward is withheld until the object actually rises.
+            # Tighter xy/z thresholds ensure the EE is physically at the object
+            # surface before claiming a grasp (prevents phantom-grasp cycles).
+            if gripper_pos > 0.7 and xy_dist < 0.05 and z_dist < 0.04:
+                self.object_grasped = True
+                self.grasp_verified = False
+                self.current_phase = 3
+                self.grasp_verify_steps = 0
+                self.prev_distance = None
+                self.grasp_attempts += 1
+                reward += 100.0
+            elif gripper_pos > 0.7 and dist_to_obj >= 0.08:
+                # Penalty scales with distance: closing far away = much worse than closing nearby
+                reward -= 0.5 + dist_to_obj * 5.0
+
+            # Wrist orientation reward: nudge gripper to horizontal (wrist_2 ≈ 0)
+            # so fingers are parallel to ground for side-grasp of cube
+            wrist_orient_err = abs(self.joint_positions[4])  # wrist_2_joint
+            reward -= wrist_orient_err * 0.3
+
+        elif self.current_phase == 3:
+            # Penalise opening gripper while lifting — object will fall
+            if gripper_pos < 0.3:
+                reward -= 20.0
+            # EE should be rising; penalise staying at or below grasp height.
+            # Raised threshold to 0.16m (just above grasp z of ~0.13m) so the
+            # policy is pushed upward immediately on entering the lift phase.
+            if ee_global[2] < 0.16:
+                reward -= 12.0 * (1.0 - ee_global[2] / 0.16)
+
+            # Direct upward reward: bonus proportional to EE height above grasp z.
+            # Gives an immediate gradient to climb even before the object rises.
+            ee_height_above_grasp = ee_global[2] - float(self.object_start_pos[2])
+            if ee_height_above_grasp > 0:
+                reward += 15.0 * min(ee_height_above_grasp / 0.12, 1.0)
+
+            # Verify grasp: real object should rise with EE; if it stays on the floor, abort.
+            # grasp_verify_steps increments unconditionally so the timeout fires even
+            # when the backend's pose feed is temporarily silent.
+            self.grasp_verify_steps += 1
+            if self.real_object_pos is not None:
+                obj_xy_err = np.linalg.norm(self.real_object_pos[:2] - ee_global[:2])
+                # Object must rise at least 3cm above its spawn z to confirm a real lift.
+                lift_z = float(self.object_start_pos[2]) + 0.03
+                if self.real_object_pos[2] >= lift_z:
+                    if not self.grasp_verified:
+                        self.grasp_verified = True
+                        self.verified_grasps += 1
+                        reward += 1000.0
+                    reward += max(0.0, 5.0 * (1.0 - obj_xy_err / 0.05))
+            else:
+                # Fallback when the pose feed isn't delivering data:
+                # if EE is high and gripper closed, assume object was carried up.
+                if ee_global[2] >= 0.18 and gripper_pos > 0.65:
+                    if not self.grasp_verified:
+                        self.grasp_verified = True
+                        self.verified_grasps += 1
+                        reward += 1000.0
+            if not self.grasp_verified and self.grasp_verify_steps > 80:
+                # Object didn't lift within the verify window — grasp failed, back to phase 2.
+                # Return immediately so the rest of the phase-3 block (lift tracking,
+                # prev_distance update) does not overwrite phase-2 state.
+                self.object_grasped = False
+                self.current_phase = 2
+                self.prev_distance = None
+                return reward - 50.0, False
+            dist_z = abs(ee_global[2] - 0.25)
+            if self.prev_distance is not None:
+                delta = self.prev_distance - dist_z
+                reward += delta * 100.0 if delta > 0 else delta * 200.0
+            self.prev_distance = dist_z
+            # Bonus for being near lift height
+            if dist_z < 0.08:
+                reward += 5.0 * (1.0 - dist_z / 0.08)
+            if self.grasp_verified and dist_z < 0.05:
+                self.current_phase = 4
+                self.prev_distance = None
+                reward += 200.0
+
+        elif self.current_phase == 4:
+            # Penalise opening gripper during transport — object will fall
+            if gripper_pos < 0.3:
+                reward -= 20.0
+            # EE should stay elevated during transport
+            if ee_global[2] < 0.12:
+                reward -= 8.0 * (1.0 - ee_global[2] / 0.12)
+
+            target_xy = self.target_pos[:2]
+            ee_xy = ee_global[:2]
+            base_xy = self.base_pose[:2]
+            # Include angle-to-target penalty so base faces goal before placing
+            angle_to_target = np.arctan2(target_xy[1] - base_xy[1], target_xy[0] - base_xy[0])
+            angle_diff = angle_to_target - self.base_pose[2]
+            while angle_diff > np.pi:  angle_diff -= 2 * np.pi
+            while angle_diff < -np.pi: angle_diff += 2 * np.pi
+            dist_xy = np.linalg.norm(target_xy - ee_xy) + np.linalg.norm(target_xy - base_xy) + abs(angle_diff) * 0.3
+            if self.prev_distance is not None:
+                reward += (self.prev_distance - dist_xy) * 50.0
+            self.prev_distance = dist_xy
+            if np.linalg.norm(target_xy - ee_xy) < 0.15 and abs(angle_diff) < 0.6:
+                self.current_phase = 5
+                self.prev_distance = None
+                reward += 100.0
+
+        elif self.current_phase == 5:
+            dist = np.linalg.norm(ee_global - self.target_pos)
+            dist_xy = np.linalg.norm(ee_global[:2] - self.target_pos[:2])
+            dist_z = abs(ee_global[2] - self.target_pos[2])
+
+            # Dense approach reward
+            if self.prev_distance is not None:
+                delta = self.prev_distance - dist
+                reward += delta * 100.0 if delta > 0 else delta * 200.0
+            self.prev_distance = dist
+
+            # Proximity bonuses — mirror phase 2 structure
+            if dist < 0.15:
+                reward += 8.0 * (1.0 - dist / 0.15)
+            if dist_xy < 0.08:
+                reward += 10.0 * (1.0 - dist_xy / 0.08)
+            if dist_z < 0.05:
+                reward += 8.0 * (1.0 - dist_z / 0.05)
+            if dist_xy < 0.06 and dist_z < 0.04:
+                reward += 12.0  # dual-align bonus
+
+            # Reward opening gripper only when correctly positioned
+            if gripper_pos < 0.3 and dist < 0.10:
+                reward += 10.0 * (1.0 - gripper_pos / 0.3)
+
+            # Penalise dropping early (opening while still far from target)
+            if gripper_pos < 0.3 and dist > 0.15:
+                reward -= 15.0
+
+            if dist < 0.08 and gripper_pos < 0.1:
+                self.object_grasped = False
+                self.grasp_verified = False
+                self.episode_success = True
+                reward += 1000.0
+                terminated = True
+
+        reward -= 0.01 * np.sum(np.abs(self.joint_velocities[:6]))
+
+        # Penalise joints approaching their limits to discourage windup
+        limit_frac = np.abs(self.joint_positions[:6]) / _UR3_JOINT_HIGH
+        reward -= 2.0 * float(np.sum(np.maximum(limit_frac - 0.75, 0.0)))
+
+        # During grasp phases (1-3): penalise base rotating away from object
+        # so the arm stays aligned with the bin after scripted pre-grasp
+        if self.current_phase in [1, 2, 3]:
+            ref_pos = self.real_object_pos if self.real_object_pos is not None else self.object_pos
+            bx, by, btheta = self.base_pose
+            desired_angle = np.arctan2(ref_pos[1] - by, ref_pos[0] - bx)
+            angle_err = desired_angle - btheta
+            while angle_err > np.pi:  angle_err -= 2 * np.pi
+            while angle_err < -np.pi: angle_err += 2 * np.pi
+            if abs(angle_err) > 0.5:
+                reward -= abs(angle_err) * 0.2
+
+        if self.curriculum_completed():
+            self.stage_success = True
+            if self.curriculum_stage > 0 and not self.episode_success:
+                reward += 300.0
+                terminated = True
+
+        return reward, terminated
+
+    def step(self, action):
+        action = np.asarray(action, dtype=np.float32)
+        if self.randomizer is not None:
+            action = self.randomizer.add_action_noise(action)
+            action = self.randomizer.apply_action_latency(action)
+
+        # Position delta control: target = current + delta, then P-drive toward target.
+        # Max delta per step = 0.25 rad → faster reach toward object.
+        delta = action[:6] * 0.25
+        target_joints = self.joint_positions[:6] + delta
+        # P-controller: velocity = (target - current) * gain, clamped to ±0.5 rad/s
+        joint_vels = np.clip((target_joints - self.joint_positions[:6]) * 10.0, -0.5, 0.5)
+        approach_assist = self._approach_assist_joint_vels()
+        # Anneal assist blend from full (1.0) to zero over _ANNEAL_STEPS so the policy
+        # becomes self-sufficient as training matures.
+        assist_scale = max(0.0, 1.0 - self._global_steps / _ANNEAL_STEPS) if self.enable_assist else 0.0
+        if self.current_phase == 1:
+            joint_vels = np.clip(assist_scale * approach_assist + 0.2 * joint_vels, -0.75, 0.75)
+        elif self.current_phase == 2:
+            joint_vels = np.clip(assist_scale * approach_assist + 0.5 * joint_vels, -0.75, 0.75)
+        if self.current_phase in [1, 2]:
+            # Wrist roll does not move the EE position; old checkpoints sometimes
+            # spin it continuously, which destabilizes training and wastes episodes.
+            joint_vels[5] = np.clip(-0.5 * self.joint_positions[5], -0.5, 0.5)
+
+        gripper_command = -1.0 if self.current_phase == 1 else action[6]
+        gripper_target = 0.8 if gripper_command > 0 else 0.0
+
+        # Lock base during manipulation phases (1-3) — arm reaches from pregrasp position
+        if self.current_phase in [1, 2, 3]:
+            base_linear_vel = 0.0
+            base_angular_vel = 0.0
+        else:
+            base_linear_vel = float(action[7]) * 0.5
+            base_angular_vel = float(action[8]) * 1.0
+            # Phase 4: blend in transport assist so the base learns to drive to target
+            assist_lin, assist_ang = self._transport_assist_base_vels()
+            base_linear_vel = float(np.clip(base_linear_vel + assist_lin * 0.5, -0.5, 0.5))
+            base_angular_vel = float(np.clip(base_angular_vel + assist_ang * 1.0, -1.0, 1.0))
+
+        # Command farther ahead while keeping velocities clamped above for stable,
+        # visible EE motion (episodes otherwise crawl at fine-grained step rates).
+        dt = 0.20
+        target_positions = np.clip(
+            self.joint_positions[:6] + (joint_vels * dt),
+            _UR3_JOINT_LOW, _UR3_JOINT_HIGH,
+        )
+
+        self._drive_arm(target_positions, dt)
+        self._drive_gripper(gripper_target)
+        self._drive_base(base_linear_vel, base_angular_vel)
+
+        if self.grasp_verified:
+            ee_global = self.get_global_ee_pos()
+            self.object_pos = ee_global.copy()
+            self.object_pos[2] -= 0.05
+
+        self._advance_physics(dt)
+        self._refresh_state()
+
+        self.prev_action = action.copy()
+
+        obs = self.get_observation()
+        reward, terminated = self.compute_reward()
+
+        # Periodic EE-approach diagnostic (phases 1 & 2 only)
+        if self.current_phase in [1, 2] and self.episode_steps % 20 == 0:
+            ee = self.get_global_ee_pos()
+            obj = self.real_object_pos if self.real_object_pos is not None else self.object_pos
+            vec = obj - ee
+            dist = float(np.linalg.norm(vec))
+            assist = self._approach_assist_joint_vels()
+            assist_norm = float(np.linalg.norm(assist))
+            jpos = self.joint_positions[:6]
+            print(
+                f"[EE-DIAG] phase={self.current_phase} step={self.episode_steps} "
+                f"ee=({ee[0]:.3f},{ee[1]:.3f},{ee[2]:.3f}) "
+                f"obj=({obj[0]:.3f},{obj[1]:.3f},{obj[2]:.3f}) "
+                f"ee->obj=({vec[0]:.3f},{vec[1]:.3f},{vec[2]:.3f}) dist={dist:.4f} "
+                f"assist_norm={assist_norm:.4f} "
+                f"joints=({jpos[0]:.3f},{jpos[1]:.3f},{jpos[2]:.3f},{jpos[3]:.3f},{jpos[4]:.3f},{jpos[5]:.3f})",
+                flush=True,
+            )
+
+        self.episode_steps += 1
+        self._global_steps += 1
+        truncated = self.episode_steps >= self.max_episode_steps
+        self.max_phase_reached = max(self.max_phase_reached, self.current_phase)
+
+        # Rolling success rate over last 100 episodes
+        if terminated or truncated:
+            self._success_history.append(1 if self.episode_success else 0)
+            if len(self._success_history) > 100:
+                self._success_history.pop(0)
+        rolling_success_rate = float(sum(self._success_history)) / max(len(self._success_history), 1)
+
+        info = {
+            'phase': int(self.current_phase),
+            'max_phase': int(self.max_phase_reached),
+            'object_grasped': bool(self.object_grasped),
+            'grasp_verified': bool(self.grasp_verified),
+            'grasp_attempts': int(self.grasp_attempts),
+            'verified_grasps': int(self.verified_grasps),
+            'real_object_z': float(self.real_object_pos[2]) if self.real_object_pos is not None else float('nan'),
+            'object_height_delta': float((self.real_object_pos[2] - self.object_start_pos[2])) if self.real_object_pos is not None else float('nan'),
+            'dist_to_obj': float(self.last_dist_to_obj),
+            'finger_joint': float(self.get_joint_position('finger_joint', self.joint_positions[6])),
+            'is_success': bool(self.episode_success),
+            'success_rate': rolling_success_rate,
+            'global_steps': int(self._global_steps),
+            'assist_scale': float(max(0.0, 1.0 - self._global_steps / _ANNEAL_STEPS) if self.enable_assist else 0.0),
+            'curriculum_stage': int(self.curriculum_stage),
+            'curriculum_target_phase': int(self.curriculum_target_phase()),
+            'stage_success': bool(self.stage_success),
+        }
+
+        return obs, reward, terminated, truncated, info
+
+    def _scripted_pregrasp(self):
+        """
+        Face the object, drive forward only until the front caster (at chassis_x + 0.36m)
+        would reach the bin back-wall (outer face ≈ 0.40m), then extend the arm.
+        Runs for up to 300 steps before handing off to RL.
+        """
+        # Bin back-wall outer face ≈ 0.405m; caster front = chassis_x + 0.24m (caster at 0.18m + radius 0.06m).
+        # Keep chassis_x ≤ 0.16m so the caster stays clear of the wall.
+        SAFE_CHASSIS_X = 0.16
+
+        obj_pos = self.real_object_pos if self.real_object_pos is not None else self.object_pos
+        for _ in range(300):
+            self._advance_physics(0.005)
+            self._refresh_state()
+            obj_pos = self.real_object_pos if self.real_object_pos is not None else self.object_pos
+
+            bx, by, btheta = self.base_pose
+            dx = obj_pos[0] - bx
+            dy = obj_pos[1] - by
+
+            # P-controller: turn to face object
+            angle_to = np.arctan2(dy, dx)
+            angle_err = angle_to - btheta
+            while angle_err > np.pi:  angle_err -= 2 * np.pi
+            while angle_err < -np.pi: angle_err += 2 * np.pi
+
+            angular = float(np.clip(angle_err * 2.0, -1.0, 1.0))
+
+            # Only drive forward if chassis x stays within the safe limit
+            if bx < SAFE_CHASSIS_X and abs(angle_err) < 0.4:
+                linear = float(np.clip((SAFE_CHASSIS_X - bx) * 3.0, 0.0, 0.2))
+            else:
+                linear = 0.0
+            self._drive_base(linear, angular)
+
+            # Keep reset neutral and let the phase-1 Cartesian assist do the
+            # actual approach. This avoids stale wrist/arm states carrying over
+            # between episodes.
+            pan_err = 0.0 - self.joint_positions[0]
+            s_err   = 0.0 - self.joint_positions[1]
+            e_err   = 0.0 - self.joint_positions[2]
+            w1_err  = 0.0 - self.joint_positions[3]
+            w2_err  = 0.0 - self.joint_positions[4]
+            w3_err  = 0.0 - self.joint_positions[5]
+
+            pan_vel = np.clip(pan_err * 2.0, -0.4, 0.4) if abs(pan_err) > 0.05 else 0.0
+            s_vel   = np.clip(s_err   * 2.0, -0.4, 0.4) if abs(s_err)   > 0.05 else 0.0
+            e_vel   = np.clip(e_err   * 2.0, -0.4, 0.4) if abs(e_err)   > 0.05 else 0.0
+            w1_vel  = np.clip(w1_err  * 2.0, -0.4, 0.4) if abs(w1_err)  > 0.05 else 0.0
+            w2_vel  = np.clip(w2_err  * 2.0, -0.4, 0.4) if abs(w2_err)  > 0.05 else 0.0
+            w3_vel  = np.clip(w3_err  * 2.0, -0.4, 0.4) if abs(w3_err)  > 0.05 else 0.0
+
+            target_positions = np.array([
+                float(self.joint_positions[0] + pan_vel * 0.05),
+                float(self.joint_positions[1] + s_vel * 0.05),
+                float(self.joint_positions[2] + e_vel * 0.05),
+                float(self.joint_positions[3] + w1_vel * 0.05),
+                float(self.joint_positions[4] + w2_vel * 0.05),
+                float(self.joint_positions[5] + w3_vel * 0.05),
+            ])
+            self._drive_arm(target_positions, 0.05)
+            self._advance_physics(0.005)
+            self._refresh_state()
+
+            # Break once the arm has actually moved into the pre-grasp pose and
+            # the robot is facing the object. Previously this could trigger at
+            # the zero joint pose, handing RL an approach state with the gripper
+            # laterally offset from the cube.
+            ee_global = self.get_global_ee_pos()
+            ee_dist_xy = np.linalg.norm(ee_global[:2] - obj_pos[:2])
+            arm_pose_err = max(abs(pan_err), abs(s_err), abs(e_err), abs(w1_err), abs(w2_err), abs(w3_err))
+            if ee_dist_xy < 0.32 and abs(angle_err) < 0.4 and arm_pose_err < 0.15:
+                self._drive_base(0.0, 0.0)
+                break
+
+        self._drive_base(0.0, 0.0)
+
+    def reset(self, seed=None, **kwargs):
+        super().reset(seed=seed)
+
+        if self._pending_curriculum_stage is not None:
+            self.curriculum_stage = self._pending_curriculum_stage
+            self._pending_curriculum_stage = None
+            self._apply_stage_randomization(self.curriculum_stage)
+
+        if self._pending_randomization_level is not None:
+            self.randomizer.set_difficulty(self._pending_randomization_level)
+            self._pending_randomization_level = None
+
+        self.episode_steps = 0
+        self.object_grasped = False
+        self.grasp_verified = False
+        self.base_pose = np.zeros(3, dtype=np.float32)
+        self.current_phase = 1  # start directly at lowering phase (base already positioned)
+        self.max_episode_steps = self.episode_step_limit()
+        self.prev_distance = None
+        self.grasp_verify_steps = 0
+        self.grasp_attempts = 0
+        self.verified_grasps = 0
+        self.max_phase_reached = self.current_phase
+        self.last_dist_to_obj = np.inf
+        self.episode_success = False
+        self.stage_success = False
+        self.prev_action = np.zeros(self.action_space.shape[0], dtype=np.float32)
+
+        if self.randomizer is not None:
+            if seed is not None:
+                self.randomizer.seed(seed)
+            self.randomizer.reset_episode()
+            self.object_start_pos = self.randomizer.randomize_object_position().astype(np.float32)
+            self.target_pos = self.randomizer.randomize_target_position().astype(np.float32)
+        else:
+            # Randomize object XY ±3cm so the policy generalises, not memorises one spot
+            rng = np.random.default_rng(seed)
+            ox = 0.6 + rng.uniform(-0.03, 0.03)
+            oy = 0.0 + rng.uniform(-0.03, 0.03)
+            oz = 0.1325  # on top of platform (platform top=0.10m + cube half=0.0325m)
+            self.object_start_pos = np.array([ox, oy, oz], dtype=np.float32)
+            self.target_pos = np.array([0.6, 0.5, 0.15], dtype=np.float32)
+        self.object_pos = self.object_start_pos.copy()
+        self.real_object_pos = None
+        ox, oy, oz = self.object_start_pos
+        if self.randomizer is not None:
+            oz = self._respawn_object_randomized(ox, oy, oz)
+            self.object_start_pos[2] = oz
+            self.object_pos[2] = oz
+            self._randomize_gravity()
+        else:
+            self._spawn_object(ox, oy, oz)
+
+        self._drive_base(0.0, 0.0)
+
+        self._wait_until_ready()
+
+        # Scripted pre-grasp: drive base to ~25cm from object, arm tucked
+        self._scripted_pregrasp()
+
+        self._advance_physics(0.1)
+        self._refresh_state()
+
+        return self.get_observation(), {}
