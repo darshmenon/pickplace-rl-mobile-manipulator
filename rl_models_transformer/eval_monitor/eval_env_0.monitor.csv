@@ -1,0 +1,2 @@
+#{"t_start": 1785173759.0627754, "env_id": "None"}
+r,l,t,phase,max_phase,object_grasped,grasp_attempts,verified_grasps,grasp_verified,real_object_z,object_height_delta,dist_to_obj,finger_joint,is_success,success_rate,assist_scale,curriculum_stage,curriculum_target_phase,stage_success

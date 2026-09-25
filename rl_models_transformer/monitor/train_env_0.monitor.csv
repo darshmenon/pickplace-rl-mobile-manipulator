@@ -1,0 +1,4 @@
+#{"t_start": 1785173749.3765738, "env_id": "None"}
+r,l,t,phase,max_phase,object_grasped,grasp_attempts,verified_grasps,grasp_verified,real_object_z,object_height_delta,dist_to_obj,finger_joint,is_success,success_rate,assist_scale,curriculum_stage,curriculum_target_phase,stage_success
+22013.589135,1339,984.016818,3,3,True,2,0,False,0.12249967455863953,-3.2782554626464844e-07,0.04531754317428745,0.0014454922638833523,False,0.0,0.998661,0,5,False
+-1283.990005,153,1696.755644,2,3,False,1,0,False,0.023199981078505516,-0.10004229284822941,0.7587898053013556,0.34781086444854736,False,0.0,0.998508,0,5,False
