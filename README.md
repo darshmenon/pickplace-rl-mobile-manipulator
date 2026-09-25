@@ -8,7 +8,7 @@
 
 > **Platform:** ROS2 Humble · Gazebo Harmonic · Ubuntu 22.04 · CUDA
 
-A mobile manipulator that learns pick-and-place **from reinforcement learning plus a scripted pre-grasp routine** — no demonstrations and no motion planning in the RL loop. A differential-drive base carries a 6-DOF UR3 arm with a Robotiq 2F-85 gripper. A lightweight controller handles base approach and arm pre-positioning; **TQC** (Truncated Quantile Critics) then learns the manipulation stages from dense reward shaping.
+A mobile manipulator that learns pick-and-place via **RL + a scripted pre-grasp routine** — no demonstrations, no motion planning in the loop. A differential-drive base carries a 6-DOF UR3 arm with a Robotiq 2F-85 gripper. A scripted controller handles base approach and arm pre-positioning; **TQC** (Truncated Quantile Critics) learns the manipulation stages from dense reward shaping.
 
 ![Robot in Gazebo](./images/gazebo_robot.png)
 
@@ -29,13 +29,13 @@ A mobile manipulator that learns pick-and-place **from reinforcement learning pl
 
 ## Highlights
 
-- **No motion planning** — single TQC policy controls 6 arm joints + gripper + base simultaneously
-- **Phase-based curriculum** — 5 phases with milestone bonuses (+100 to +1000) and asymmetric retreat penalties (3–4× harsher than approach reward)
-- **Analytical FK** — UR3 DH parameters compute EE world position with zero TF latency
+- **No motion planning** — one TQC policy controls 6 arm joints + gripper + base simultaneously
+- **Phase-based curriculum** — 5 phases, milestone bonuses (+100 to +1000), retreat penalized 3–4× harsher than approach
+- **Analytical FK** — UR3 DH parameters give EE world position with zero TF latency
 - **Real Gazebo poses** — `ros_gz` dynamic_pose bridge gives ground-truth object position, no fake randomisation
-- **Grasp verification** — object lift is checked against the real Gazebo pose for up to 30 steps before confirming success
-- **VecNormalize** — online normalisation of all 46 obs dimensions + reward, critical for mixed-scale inputs
-- **Caster-aware pregrasp** — front caster (r=6cm at x=+30cm from chassis) kept clear of bin wall; arm reaches over wall from spawn
+- **Grasp verification** — object lift checked against real Gazebo pose for up to 80 steps before confirming success
+- **VecNormalize** — online normalisation of all 46 obs dims + reward, critical for mixed-scale inputs
+- **Caster-aware pregrasp** — front caster (r=6cm, x=+30cm from chassis) kept clear of bin wall as the arm reaches over it
 
 ---
 
@@ -43,18 +43,18 @@ A mobile manipulator that learns pick-and-place **from reinforcement learning pl
 
 ### Algorithm: TQC (Truncated Quantile Critics)
 
-Upgraded from SAC (SAC best reward: −328). TQC distributes return estimates across multiple quantile networks and truncates the top quantiles before Bellman updates — the pessimistic bias suppresses Q-value overestimation in contact-rich manipulation, producing more stable and consistent grasping behaviour.
+Upgraded from SAC (best reward: −328). TQC distributes return estimates across multiple quantile networks and truncates the top quantiles before Bellman updates, suppressing Q-value overestimation for more stable grasping.
 
-| Hyperparameter | Value | Rationale |
-|---------------|-------|-----------|
-| Policy network | `[512, 512, 512]` | Deeper than default [256,256] — maps complex 46-dim obs to 9-dim action |
-| `gradient_steps` | 4 | 4 updates per env step — higher sample efficiency |
-| `buffer_size` | 500 000 | Replay buffer for off-policy learning |
-| `batch_size` | 512 | Large batch for stable gradients |
-| `gamma` | 0.99 | Long-horizon discounting for multi-phase task |
-| `learning_starts` | 1 000 | Random exploration before first update |
-| `VecNormalize` | `clip_obs=10` | Normalises obs online; eval env uses frozen stats |
-| `top_quantiles_to_drop` | 2 | Conservative Q-targets for manipulation stability |
+| Hyperparameter | Value | Why |
+|---------------|-------|-----|
+| Policy network | `[512, 512, 512]` | Deeper than default [256,256] for the 46-dim → 9-dim mapping |
+| `gradient_steps` | 4 | Higher sample efficiency |
+| `buffer_size` | 500,000 | Off-policy replay buffer |
+| `batch_size` | 512 | Stable gradients |
+| `gamma` | 0.99 | Long-horizon discounting for the multi-phase task |
+| `learning_starts` | 1,000 | Random exploration before first update |
+| `VecNormalize` | `clip_obs=10` | Online obs normalisation; eval env uses frozen stats |
+| `top_quantiles_to_drop` | 2 | Conservative Q-targets |
 
 ---
 
@@ -106,39 +106,26 @@ Position-delta control (not raw velocity) gives a stable zero-action baseline �
 
 **Milestone bonuses:** +100 (phases 1, 3, 4, 5), +1000 (grasp success at phase 2).
 
+`CurriculumCallback` in `train_rl.py` drives stage transitions from thresholds in `config/curriculum.yaml`. Default mode advances/reverts on fixed eval-reward thresholds. `--adaptive-curriculum` instead advances once eval reward plateaus (rolling improvement below `epsilon` over `window` evals), gated by a `floor_ratio` safety floor so a fast-learning stage can move on sooner without dropping below the fixed-mode minimum bar.
+
 ---
 
-### Reward Design — Full Detail
+### Hyperparameter Tuning
 
+Per-algorithm hyperparameters live in `config/algo_hparams.yaml`, loaded by `agent_factory.hparams_for()` — edit it to sweep values (learning rate, `tau`, `top_quantiles_to_drop_per_net`, ...) without touching `train_rl.py` or `agent_factory.py`. Missing keys/algorithms fall back to `agent_factory._DEFAULT_HPARAMS`.
+
+For automated search, `optimize_rl.py` runs an Optuna study: each trial trains fresh in a single Gazebo world for a short budget, scored on final eval reward, with a median pruner killing trials that fall behind.
+
+```bash
+ros2 run pickplace_rl_mobile optimize_rl --n-trials 20 --timesteps-per-trial 30000 \
+  --algo tqc --curriculum-stage 1 --storage sqlite:///rl_models/optuna/study.db
 ```
-Phase 1  (approach)
-  Δ(dist_z + dist_xy) × 100   approach  |  × 300   retreat   ← 3× harsher
-  proximity bonus:  +5 × (1 − dist_xy/0.15)  when dist_xy < 15 cm
-  z-align bonus:    +4 × (1 − dist_z/0.05)   when dist_z  <  5 cm
-  dual-close bonus: +8 flat                  when both xy < 8 cm AND z < 5 cm
-  gripper-close penalty: −2/step             if gripper closed during approach
 
-Phase 2  (grasp)
-  Δdist_to_grasp_target × 80  approach  |  × 320   retreat   ← 4× harsher
-  proximity bonus:   +8 × (1 − dist/0.10)   when dist < 10 cm
-  touch-range bonus: +15 × (1 − dist/0.04)  when dist <  4 cm
-  very-close bonus:  +10 flat               when dist <  3 cm
-  XY-align bonus:    +10 × (1 − xy/0.05)    when xy < 5 cm
-  Z-align bonus:     +8 × (1 − z/0.04)      when z  < 4 cm
-  dual-align bonus:  +12 flat               when xy < 4 cm AND z < 3 cm
-  gripper-close bonus: +8 × gripper_pos     when closing in true grasp range
-  open-near-object penalty: −5              when gripper opens inside 5 cm
-  wrong-close penalty: −(0.5 + dist × 5)    when closing far away
-  high-close penalty: −10 × z_dist          when closing while vertically misaligned
-  wrist orientation:  −|wrist_2_angle| × 0.3  (keep gripper horizontal)
+A short trial can't reach the full 5-phase task — treat the winning config (written to `rl_models/optuna/<study-name>_best_hparams.yaml`) as a starting point to merge into `config/algo_hparams.yaml` and verify with a full `train_rl.py` run. `--storage` makes the study resumable; omit it for a quick in-memory search.
 
-Safety / global
-  out-of-bounds:      −500 + terminate   if base > 1.5 m from object
-  EE underground:     −500 + terminate   (phase ∉ 1,2,5)
-  high joint vel:     −500 + terminate   if any joint vel > 10 rad/s
-  misalignment penalty: −|angle_err| × 0.2  if base not facing object in phases 1–3
-  action smoothness:  −0.01 × Σ|joint_vels|  every step
-```
+---
+
+Per-step reward is potential-based shaping (distance reduction × phase scale, retreat penalised 3–4× harsher than approach) plus proximity/alignment bonuses and safety terminations (out-of-bounds, EE underground, runaway joint velocity). Full breakdown: **[CONCEPTS.md §4](./CONCEPTS.md#4-potential-based-reward-shaping)**; constants live in `pickplace_env.py::compute_reward()`.
 
 ---
 
@@ -163,7 +150,7 @@ RL step()  (~40 Hz)
     └── Return (obs, reward, terminated, truncated)
 ```
 
-**FK pipeline:** UR3 DH parameters compute EE analytically. A 180° yaw on `base_link_inertia` means FK output is flipped (x→−x, y→−y) before adding the arm mount offset, giving EE in the chassis frame and then world frame via odometry.
+**FK pipeline:** UR3 DH parameters compute EE analytically. A 180° yaw on `base_link_inertia` flips the FK output (x→−x, y→−y) before adding the arm mount offset, giving EE in chassis frame, then world frame via odometry.
 
 ---
 
@@ -197,15 +184,7 @@ source install/setup.bash
 
 ## Quick Start
 
-Build and source first:
-
-```bash
-source /opt/ros/humble/setup.bash
-colcon build --packages-select pickplace_rl_mobile --symlink-install
-source install/setup.bash
-```
-
-Run the best saved policy in Gazebo:
+Assumes **Setup** above is done (workspace built, sourced). Run the best saved policy in Gazebo:
 
 ```bash
 ros2 launch pickplace_rl_mobile full_system.launch.py \
@@ -214,28 +193,13 @@ ros2 launch pickplace_rl_mobile full_system.launch.py \
   model_path:=./rl_models/best_model/best_model.zip
 ```
 
-`use_perception:=false` uses the world-file fallback object pose `[0.6, 0.0, 0.1325]`, which matches the red pickup box in `pickplace_world.world`.
+`use_perception:=false` uses the world-file fallback object pose `[0.6, 0.0, 0.1325]`, matching the red pickup box in `pickplace_world.world`.
 
-Train or resume training:
+To train or resume training, jump to **Launch Guide → RL training** below — it starts Gazebo and the trainer together with the wiring used by the current checkpoints. Most common:
 
 ```bash
-# Resume best checkpoint, with Gazebo GUI if DISPLAY works
-bash src/pickplace_rl_mobile/launch/run_rl_training.sh --resume-best
-
-# Resume best checkpoint, headless
 bash src/pickplace_rl_mobile/launch/run_rl_training.sh --resume-best --headless
-
-# Resume latest numbered checkpoint
-bash src/pickplace_rl_mobile/launch/run_rl_training.sh --resume-latest --headless
-
-# Start fresh
-bash src/pickplace_rl_mobile/launch/run_rl_training.sh --fresh --headless
-
-# Train a specific curriculum stage
-bash src/pickplace_rl_mobile/launch/run_rl_training.sh --curriculum-stage 2 --timesteps 200000 --headless
 ```
-
-This is the **recommended launch path** for RL work because it starts Gazebo and the trainer with the wiring used by the current checkpoints.
 
 ---
 
@@ -244,18 +208,17 @@ This is the **recommended launch path** for RL work because it starts Gazebo and
 ### RL training
 
 ```bash
-# Resume best checkpoint
 bash src/pickplace_rl_mobile/launch/run_rl_training.sh --resume-best --headless
-
-# Start a fresh run
-bash src/pickplace_rl_mobile/launch/run_rl_training.sh --fresh --headless
-
-# Resume from the latest numbered checkpoint
-bash src/pickplace_rl_mobile/launch/run_rl_training.sh --resume-latest --headless
-
-# Resume an explicit checkpoint
-bash src/pickplace_rl_mobile/launch/run_rl_training.sh ./rl_models/pickplace_model_690000_steps.zip --headless
 ```
+
+| Flag | Effect |
+|------|--------|
+| `--resume-best` / `--resume-latest` / `--fresh` / `<checkpoint.zip>` | Which weights to start from |
+| `--headless` | No Gazebo GUI (omit if `DISPLAY` works and you want to watch) |
+| `--curriculum-stage N --timesteps N` | Train a specific curriculum stage |
+| `--fast` | Sparser eval/checkpoint, 1 gradient step — for quick iteration |
+
+Flags combine freely, e.g. `--resume-best --fast --headless`. Full list: `run_rl_training.sh --help`.
 
 ### Gazebo only
 
@@ -264,7 +227,13 @@ ros2 launch pickplace_rl_mobile gazebo.launch.py
 
 # Headless Gazebo only
 ros2 launch pickplace_rl_mobile gazebo.launch.py headless:=true
+
+# Warehouse-dressed world for demos/screenshots (same task objects/poses as
+# pickplace_world.world, just more expensive to load — don't use for training)
+ros2 launch pickplace_rl_mobile gazebo.launch.py world:=pickplace_world_warehouse.world
 ```
+
+`worlds/pickplace_world_warehouse.world` places the same `object_bin`/`target_zone`/`pickup_object`/camera as the default training world inside a warehouse shell (AWS RoboMaker Small Warehouse models, already vendored under `src/ur_gazebo/models/aws_robomaker_warehouse_*`). Training keeps using the minimal `pickplace_world.world` — fewer meshes means faster resets, and reward/observations don't depend on scenery.
 
 ### Trainer only
 
@@ -323,71 +292,17 @@ ros2 topic echo /joint_states --once
 ros2 topic echo /odom --once
 
 # Check whether the policy is publishing arm commands
-ros2 topic hz /shoulder_pan_joint/cmd_vel --window 5
+ros2 topic hz /arm_controller/joint_trajectory --window 5
 
 # Stop Gazebo/ROS if needed
 pkill -f "gz sim|ros2 launch|parameter_bridge|train_rl"
 ```
 
-Checkpoints save every 10 k steps to `./rl_models/`. The best eval checkpoint is `./rl_models/best_model/best_model.zip`, with normalization stats at `./rl_models/best_model/best_vecnormalize.pkl`. Latest-run VecNormalize stats save to `./rl_models/vecnormalize.pkl` and replay data to `./rl_models/replay_buffer.pkl`; both are reused automatically on resume when compatible.
+Checkpoints save every 10k steps to `./rl_models/`. Best eval checkpoint: `./rl_models/best_model/best_model.zip`, normalization stats at `./rl_models/best_model/best_vecnormalize.pkl`. Latest-run VecNormalize stats save to `./rl_models/vecnormalize.pkl`, replay data to `./rl_models/replay_buffer.pkl` — both reused automatically on resume when compatible. Eval progress lives in `./rl_models/evaluations.npz` (plot with `python3 plot_training.py`).
 
----
+The trainer auto-detects legacy 27-dim vs. current 46-dim observation mode, restores VecNormalize/replay-buffer state on resume, and anneals the scripted approach/transport assist to zero over training (eval always runs with assist off, so best-model selection reflects the learned policy alone). `--policy-arch transformer` swaps the MLP head for a self-attention encoder over named observation groups — needs a fresh model, not resumable from an MLP checkpoint. See **[CONCEPTS.md](./CONCEPTS.md)** for why TQC, why potential-based shaping, and how grasp verification/domain randomization work.
 
-### Latest Local Checkpoints
-
-| Artifact | Status |
-|----------|--------|
-| Latest numbered checkpoint | `rl_models/pickplace_model_785000_steps.zip` |
-| Best eval checkpoint | `rl_models/best_model/best_model.zip` |
-| Latest eval file | `rl_models/evaluations.npz` |
-| Last recorded eval step | `775000` |
-| Last recorded mean eval reward | **-302.44** |
-
-Eval reward and the training-reward scale were realigned (see "Align TQC training and evaluation behavior"), so this number isn't directly comparable to older reward figures — treat it as a fresh baseline. Grasping and lifting (phases 2-3) are consistently reached in training rollouts; full end-to-end place success (phase 5) under the harder curriculum-stage-0 (full task) setting is the current focus.
-
----
-
-### Current Trainer Behavior
-
-The current trainer resumes from checkpoints, restores VecNormalize stats, reloads the replay buffer when possible, and auto-detects legacy 27-dim checkpoints versus the current 46-dim observation mode. Key improvements over the older SAC setup:
-
-| Change | Impact |
-|--------|--------|
-| SAC → TQC | Replaced the older SAC baseline with a more stable critic ensemble |
-| Scripted pre-grasp | Deterministic base approach frees RL to focus on manipulation |
-| Caster-aware driving | Stops chassis at x ≤ 16 cm to avoid bin wall collision |
-| Arm pre-extension | Pregrasp sets shoulder/elbow/wrist to face object; EE ≤ 30 cm from target |
-| Asymmetric penalties | 3–4× harsher retreat vs approach; prevents oscillating policy |
-| Equal XY+Z weight (phase 1) | Was 0.5× XY; now 1.0× so agent approaches horizontally and vertically together |
-| VecNormalize | Normalises mixed-scale 46-dim obs; critical for stable TQC training |
-| Network [512,512,512] | Larger than default [256,256]; better function approximation |
-| `gradient_steps=4` | 2× more updates per env step; faster convergence |
-| Verified grasp reward +1000 | Only awarded once the real Gazebo object actually lifts |
-| Grasp verification | Real-object lift verification over a 30-step window prevents reward hacking |
-| Action/perception latency randomization | Episode-sampled delay on executed actions and on the perceived object position (`domain_randomizer.py`), so the policy tolerates real actuator/control-loop lag and camera-pipeline latency instead of only ever seeing instant, ground-truth state |
-| Perception noise separated from reward | The observation sees a noisy estimate of object position; reward/grasp-verification logic still uses Gazebo ground truth, so training signal quality doesn't degrade along with simulated perception |
-| Transformer policy option | `--policy-arch transformer` tokenizes the observation into named groups (joints, EE pos, object pos, ...) and self-attends over them instead of a flat MLP; requires a fresh model, not resumable from an MLP checkpoint |
-| Atomic checkpoint saves | Numbered checkpoints save to a temp file and rename into place, so a killed process can no longer leave a truncated, unloadable `*_steps.zip` |
-
-Training rollouts use annealed approach/transport assist, but evaluation environments disable assist by default so best-model selection reflects the learned policy.
-
-Concurrent experiments (e.g. comparing `--policy-arch mlp` vs `transformer`) can share the machine without colliding: set `PICKPLACE_DOMAIN_BASE`, `PICKPLACE_TRAIN_PARTITION`, `PICKPLACE_EVAL_PARTITION`, and `PICKPLACE_RUNTIME_ROOT` to disjoint values per run, and give each a separate `--save-dir`.
-
----
-
-## Roadmap
-
-| Feature | Status | Description |
-|---------|--------|-------------|
-| Safety guard joint names | Done | Fixed to match UR3 (`shoulder_pan_joint`, etc.) with real DH FK |
-| Eval reward plot script | Done | `python3 plot_training.py` — reward curves + episode length |
-| Place phase reward shaping | Done | Phase 5 now has proximity bonuses, alignment bonuses, early-drop penalty |
-| Approach assist annealing | Done | Assist blend decays 1.0 → 0 over 1M steps |
-| Base navigation assist (phase 4) | Done | Gentle base nudge toward drop zone, also annealed |
-| Running success rate metric | Done | Rolling 100-episode success rate logged to `monitor.csv` and `info` |
-| Domain randomization → Gazebo | Done | Object respawned each episode with randomized color, mass, size, friction; gravity perturbed via `set_physics` |
-| Multi-object generalization | Done | Box, cylinder, and sphere spawned per episode with per-shape inertia; curriculum thresholds adjusted for added difficulty |
-| Success rate plot | Done | `plot_training.py` now shows rolling success rate from monitor CSVs as a third panel |
+Concurrent experiments (e.g. `--policy-arch mlp` vs `transformer`) can share the machine without colliding: give each run disjoint `PICKPLACE_DOMAIN_BASE`, `PICKPLACE_TRAIN_PARTITION`, `PICKPLACE_EVAL_PARTITION`, `PICKPLACE_RUNTIME_ROOT`, and a separate `--save-dir`.
 
 ---
 

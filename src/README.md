@@ -89,7 +89,7 @@ ros2 launch robotiq_2finger_grippers robotiq_2f_85_gripper_visualization/launch/
 
 ---
 
-## 🤖 Move the Arm from CLI
+## Move the Arm from CLI
 
 Send a simple trajectory:
 ```bash
@@ -180,4 +180,3 @@ This script will:
 ## 🤝 Contributing
 
 Feel free to open pull requests or issues if you have improvements or bug reports.
-
