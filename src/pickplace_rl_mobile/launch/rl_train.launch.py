@@ -10,7 +10,14 @@ def _make_train_node(context):
         '--curriculum-stage', LaunchConfiguration('curriculum_stage').perform(context),
         '--algo', LaunchConfiguration('algo').perform(context),
         '--policy-arch', LaunchConfiguration('policy_arch').perform(context),
+        '--eval-freq', LaunchConfiguration('eval_freq').perform(context),
+        '--n-eval-episodes', LaunchConfiguration('n_eval_episodes').perform(context),
+        '--checkpoint-freq', LaunchConfiguration('checkpoint_freq').perform(context),
     ]
+
+    gradient_steps = LaunchConfiguration('gradient_steps').perform(context).strip()
+    if gradient_steps:
+        args.extend(['--gradient-steps', gradient_steps])
 
     load_model = LaunchConfiguration('load_model').perform(context).strip()
     if load_model:
@@ -18,6 +25,10 @@ def _make_train_node(context):
 
     if LaunchConfiguration('adaptive_curriculum').perform(context).lower() in ('true', '1'):
         args.append('--adaptive-curriculum')
+
+    if LaunchConfiguration('adaptive_domain_randomization').perform(context).lower() in ('true', '1'):
+        args.append('--adaptive-domain-randomization')
+        args.extend(['--adr-step', LaunchConfiguration('adr_step').perform(context)])
 
     rl_node = Node(
         package='pickplace_rl_mobile',
@@ -66,6 +77,36 @@ def generate_launch_description():
         default_value='false',
         description='Advance curriculum stages on reward-plateau detection instead of fixed thresholds only'
     )
+    eval_freq_arg = DeclareLaunchArgument(
+        'eval_freq',
+        default_value='10000',
+        description='Evaluate every N environment steps before n-env scaling'
+    )
+    n_eval_episodes_arg = DeclareLaunchArgument(
+        'n_eval_episodes',
+        default_value='10',
+        description='Number of episodes per evaluation batch'
+    )
+    checkpoint_freq_arg = DeclareLaunchArgument(
+        'checkpoint_freq',
+        default_value='10000',
+        description='Checkpoint every N environment steps before n-env scaling'
+    )
+    gradient_steps_arg = DeclareLaunchArgument(
+        'gradient_steps',
+        default_value='',
+        description='Off-policy gradient updates per environment step'
+    )
+    adaptive_domain_randomization_arg = DeclareLaunchArgument(
+        'adaptive_domain_randomization',
+        default_value='false',
+        description='Widen/narrow domain randomization (friction, mass, action/perception noise) on eval performance'
+    )
+    adr_step_arg = DeclareLaunchArgument(
+        'adr_step',
+        default_value='0.15',
+        description='Randomization level step size per ADR adjustment (0-1 range)'
+    )
 
     return LaunchDescription([
         timesteps_arg,
@@ -75,5 +116,11 @@ def generate_launch_description():
         algo_arg,
         policy_arch_arg,
         adaptive_curriculum_arg,
+        eval_freq_arg,
+        n_eval_episodes_arg,
+        checkpoint_freq_arg,
+        gradient_steps_arg,
+        adaptive_domain_randomization_arg,
+        adr_step_arg,
         OpaqueFunction(function=_make_train_node),
     ])

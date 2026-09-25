@@ -197,6 +197,53 @@ class CurriculumCallback(BaseCallback):
         return True
 
 
+class AutomaticDomainRandomizationCallback(BaseCallback):
+    """Automatic Domain Randomization (ADR): widen the DomainRandomizer's
+    nuisance ranges (object size, friction, mass/gravity noise, action and
+    perception noise/latency) as eval performance improves, and narrow them
+    back if performance regresses — reusing the same eval-triggered signal
+    and thresholds CurriculumCallback uses to advance/revert task stages.
+    Rationale: starting training at full nuisance randomization fights the
+    policy before it has learned the base motion (OpenAI's Rubik's-cube ADR).
+
+    Object/target position randomization is untouched here — that's already
+    widened per curriculum stage by PickPlaceEnv._apply_stage_randomization.
+    """
+
+    def __init__(self, curriculum_callback: CurriculumCallback, step: float = 0.15,
+                 start_level: float = 0.0):
+        super().__init__()
+        self.curriculum_callback = curriculum_callback
+        self.step = step
+        self.level = start_level
+        self._last_eval_step = 0
+
+    def _set_level(self, level: float, mean_reward: float, reason: str) -> None:
+        self.level = max(0.0, min(1.0, level))
+        self.training_env.env_method('set_randomization_level', self.level)
+        self.curriculum_callback.eval_env.env_method('set_randomization_level', self.level)
+        print(f"ADR {reason} randomization level to {self.level:.2f} (eval reward {mean_reward:.2f})")
+
+    def _on_step(self) -> bool:
+        eval_callback = self.curriculum_callback.eval_callback
+        if eval_callback.n_calls == self._last_eval_step:
+            return True
+        if eval_callback.n_calls % eval_callback.eval_freq != 0:
+            return True
+        self._last_eval_step = eval_callback.n_calls
+        mean_reward = eval_callback.last_mean_reward
+
+        stage = self.curriculum_callback.current_stage
+        advance_threshold = self.curriculum_callback.ADVANCE_THRESHOLDS.get(stage)
+        revert_threshold = self.curriculum_callback.REVERT_THRESHOLDS.get(stage)
+
+        if advance_threshold is not None and mean_reward >= advance_threshold and self.level < 1.0:
+            self._set_level(self.level + self.step, mean_reward, "widening")
+        elif revert_threshold is not None and mean_reward < revert_threshold and self.level > 0.0:
+            self._set_level(self.level - self.step, mean_reward, "narrowing")
+        return True
+
+
 def _infer_observation_mode(load_model: str | None) -> str:
     if not load_model:
         return 'full'
@@ -296,10 +343,14 @@ _MULTI_WORLD_BASE_DOMAIN = int(os.environ.get('PICKPLACE_DOMAIN_BASE', 20))
 _SINGLE_WORLD_TRAIN_PARTITION = os.environ.get('PICKPLACE_TRAIN_PARTITION', 'sim_0')
 _SINGLE_WORLD_EVAL_PARTITION = os.environ.get('PICKPLACE_EVAL_PARTITION', 'sim_1')
 _DEFAULT_N_EVAL_EPISODES = 10
+_DEFAULT_CALLBACK_FREQ = 10000
 
 
 def train(total_timesteps=500000, save_dir='./models', n_envs=1, load_model=None, curriculum_stage=0,
-          algo='tqc', policy_arch='mlp', adaptive_curriculum=False):
+          algo='tqc', policy_arch='mlp', adaptive_curriculum=False,
+          eval_freq=_DEFAULT_CALLBACK_FREQ, n_eval_episodes=_DEFAULT_N_EVAL_EPISODES,
+          checkpoint_freq=_DEFAULT_CALLBACK_FREQ, gradient_steps=None,
+          adaptive_domain_randomization=False, adr_step=0.15, lr_schedule='constant'):
     os.makedirs(save_dir, exist_ok=True)
     load_model = load_model.strip() if isinstance(load_model, str) else load_model
     observation_mode = _infer_observation_mode(load_model)
@@ -391,8 +442,9 @@ def train(total_timesteps=500000, save_dir='./models', n_envs=1, load_model=None
     eval_env.training = False
     eval_env.norm_reward = False
 
-    ckpt_freq = max(10000 // n_envs, 1)
-    eval_freq = max(10000 // n_envs, 1)
+    ckpt_freq = max(int(checkpoint_freq) // n_envs, 1)
+    eval_freq = max(int(eval_freq) // n_envs, 1)
+    n_eval_episodes = max(int(n_eval_episodes), 1)
     checkpoint_callback = AtomicCheckpointCallback(
         save_freq=ckpt_freq,
         save_path=save_dir,
@@ -404,7 +456,7 @@ def train(total_timesteps=500000, save_dir='./models', n_envs=1, load_model=None
         best_model_save_path=best_model_dir,
         log_path=save_dir,
         eval_freq=eval_freq,
-        n_eval_episodes=_DEFAULT_N_EVAL_EPISODES,
+        n_eval_episodes=n_eval_episodes,
         deterministic=True,
         callback_on_new_best=SaveBestVecNormalizeCallback(best_model_dir),
     )
@@ -431,8 +483,8 @@ def train(total_timesteps=500000, save_dir='./models', n_envs=1, load_model=None
             print("Set ent_coef=0.1 on resume")
 
         if agent_factory.is_off_policy(algo):
-            model.gradient_steps = 4
-            print("Set gradient_steps=4 on resume")
+            model.gradient_steps = int(gradient_steps) if gradient_steps is not None else 4
+            print(f"Set gradient_steps={model.gradient_steps} on resume")
 
             # Load replay buffer if available — avoids cold-start problem entirely.
             replay_buf_candidates = [
@@ -463,18 +515,38 @@ def train(total_timesteps=500000, save_dir='./models', n_envs=1, load_model=None
                 # so the agent has a diverse starting distribution to learn from.
                 _schedule_replay_prefill(model)
     else:
-        print(f"Initializing new {algo.upper()} model (policy_arch={policy_arch})...")
+        print(f"Initializing new {algo.upper()} model (policy_arch={policy_arch}, "
+              f"lr_schedule={lr_schedule})...")
         model = agent_factory.create_model(
             algo, env, policy_arch=policy_arch,
             tensorboard_log=os.path.join(save_dir, 'tensorboard'),
-            device='auto', verbose=1,
+            device='auto', verbose=1, lr_schedule=lr_schedule,
         )
+        if agent_factory.is_off_policy(algo) and gradient_steps is not None:
+            model.gradient_steps = int(gradient_steps)
+            print(f"Set gradient_steps={model.gradient_steps}")
 
     callbacks = [checkpoint_callback, vecnorm_callback, eval_callback, curriculum_callback]
     if not load_model and agent_factory.is_entropy_tunable(algo):
         callbacks.append(EntropyDecayCallback(initial=0.3, final=0.05, decay_steps=100000))
 
-    print(f"Starting {algo.upper()} training for {total_timesteps} timesteps across {n_envs} env(s)...")
+    if adaptive_domain_randomization:
+        # Curriculum stage 0 means "no curriculum, train on the full task" — ADR has
+        # no advance/revert thresholds to trigger on there, so start it at full
+        # randomization (matches the pre-ADR default) instead of stalling narrow forever.
+        start_level = 0.0 if curriculum_stage > 0 else 1.0
+        env.env_method('set_randomization_level', start_level)
+        eval_env.env_method('set_randomization_level', start_level)
+        callbacks.append(AutomaticDomainRandomizationCallback(
+            curriculum_callback, step=adr_step, start_level=start_level,
+        ))
+        print(f"Automatic Domain Randomization enabled (start_level={start_level:.2f}, step={adr_step})")
+
+    print(
+        f"Starting {algo.upper()} training for {total_timesteps} timesteps across {n_envs} env(s) "
+        f"(eval_freq={eval_freq}, n_eval_episodes={n_eval_episodes}, "
+        f"checkpoint_freq={ckpt_freq})..."
+    )
     model.learn(
         total_timesteps=total_timesteps,
         callback=callbacks,
@@ -512,6 +584,25 @@ def main():
     parser.add_argument('--adaptive-curriculum', action='store_true',
                         help='Advance curriculum stages on reward-plateau detection instead of '
                              'fixed thresholds only (see config/curriculum.yaml)')
+    parser.add_argument('--eval-freq', type=int, default=_DEFAULT_CALLBACK_FREQ,
+                        help=f'Evaluate every N env steps before n-env scaling (default: {_DEFAULT_CALLBACK_FREQ})')
+    parser.add_argument('--n-eval-episodes', type=int, default=_DEFAULT_N_EVAL_EPISODES,
+                        help=f'Number of episodes per evaluation batch (default: {_DEFAULT_N_EVAL_EPISODES})')
+    parser.add_argument('--checkpoint-freq', type=int, default=_DEFAULT_CALLBACK_FREQ,
+                        help=f'Checkpoint every N env steps before n-env scaling (default: {_DEFAULT_CALLBACK_FREQ})')
+    parser.add_argument('--gradient-steps', type=int, default=None,
+                        help='Off-policy gradient updates per env step; default keeps algorithm/resume setting')
+    parser.add_argument('--adaptive-domain-randomization', action='store_true',
+                        help='Automatic Domain Randomization: start nuisance randomization '
+                             '(object size, friction, mass/gravity noise, action/perception '
+                             'noise and latency) narrow and widen it on the same eval signal '
+                             'that advances/reverts curriculum stages')
+    parser.add_argument('--adr-step', type=float, default=0.15,
+                        help='ADR randomization-level step per advance/revert (default: 0.15)')
+    parser.add_argument('--lr-schedule', type=str, default='constant', choices=agent_factory.LR_SCHEDULES,
+                        help='Learning-rate schedule for new models: constant (default) or '
+                             'linear decay to 0 over total-timesteps. Only applies when starting '
+                             'fresh, not on --load-model resume')
 
     args, unknown = parser.parse_known_args()
 
@@ -524,6 +615,13 @@ def main():
         algo=args.algo,
         policy_arch=args.policy_arch,
         adaptive_curriculum=args.adaptive_curriculum,
+        eval_freq=args.eval_freq,
+        n_eval_episodes=args.n_eval_episodes,
+        checkpoint_freq=args.checkpoint_freq,
+        gradient_steps=args.gradient_steps,
+        adaptive_domain_randomization=args.adaptive_domain_randomization,
+        adr_step=args.adr_step,
+        lr_schedule=args.lr_schedule,
     )
 
 

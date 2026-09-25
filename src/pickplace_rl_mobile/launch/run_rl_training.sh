@@ -9,6 +9,8 @@
 #   ./run_rl_training.sh --algo ppo --policy-arch transformer --headless
 #   ./run_rl_training.sh --world pickplace_world_obstacles.world --headless
 #   ./run_rl_training.sh --adaptive-curriculum --headless
+#   ./run_rl_training.sh --adaptive-domain-randomization --headless
+#   ./run_rl_training.sh --fast --headless
 
 set -eo pipefail
 
@@ -52,6 +54,12 @@ RESUME_POLICY="best"
 ALGO="tqc"
 POLICY_ARCH="mlp"
 ADAPTIVE_CURRICULUM=false
+ADAPTIVE_DOMAIN_RANDOMIZATION=false
+ADR_STEP=0.15
+EVAL_FREQ=10000
+N_EVAL_EPISODES=10
+CHECKPOINT_FREQ=10000
+GRADIENT_STEPS=""
 WORLD="pickplace_world.world"
 # Overridable via env so a second concurrent run (e.g. a different --policy-arch
 # experiment) can use a disjoint ROS domain / Gazebo transport partition.
@@ -116,6 +124,35 @@ while [ $# -gt 0 ]; do
         --adaptive-curriculum)
             ADAPTIVE_CURRICULUM=true
             ;;
+        --adaptive-domain-randomization)
+            ADAPTIVE_DOMAIN_RANDOMIZATION=true
+            ;;
+        --adr-step)
+            ADR_STEP="$2"
+            shift
+            ;;
+        --fast)
+            EVAL_FREQ=50000
+            N_EVAL_EPISODES=2
+            CHECKPOINT_FREQ=50000
+            GRADIENT_STEPS=1
+            ;;
+        --eval-freq)
+            EVAL_FREQ="$2"
+            shift
+            ;;
+        --n-eval-episodes)
+            N_EVAL_EPISODES="$2"
+            shift
+            ;;
+        --checkpoint-freq)
+            CHECKPOINT_FREQ="$2"
+            shift
+            ;;
+        --gradient-steps)
+            GRADIENT_STEPS="$2"
+            shift
+            ;;
         --world)
             WORLD="$2"
             shift
@@ -162,6 +199,8 @@ else
 fi
 echo "[run_rl_training] timesteps=$TIMESTEPS curriculum_stage=$CURRICULUM_STAGE save_dir=$SAVE_DIR headless=$HEADLESS"
 echo "[run_rl_training] algo=$ALGO policy_arch=$POLICY_ARCH adaptive_curriculum=$ADAPTIVE_CURRICULUM world=$WORLD"
+echo "[run_rl_training] adaptive_domain_randomization=$ADAPTIVE_DOMAIN_RANDOMIZATION adr_step=$ADR_STEP"
+echo "[run_rl_training] eval_freq=$EVAL_FREQ n_eval_episodes=$N_EVAL_EPISODES checkpoint_freq=$CHECKPOINT_FREQ gradient_steps=${GRADIENT_STEPS:-default}"
 echo "[run_rl_training] train world: ROS_DOMAIN_ID=$TRAIN_DOMAIN GZ_PARTITION=$TRAIN_PARTITION"
 echo "[run_rl_training] eval world:  ROS_DOMAIN_ID=$EVAL_DOMAIN GZ_PARTITION=$EVAL_PARTITION (headless)"
 echo "[run_rl_training] runtime root: $RUNTIME_ROOT"
@@ -176,30 +215,34 @@ EVAL_GAZEBO_PID=$!
 
 sleep 8
 
-if [ -n "$MODEL_PATH" ]; then
-    env ROS_DOMAIN_ID=$TRAIN_DOMAIN GZ_PARTITION=$TRAIN_PARTITION \
-        PICKPLACE_DOMAIN_BASE=$TRAIN_DOMAIN PICKPLACE_TRAIN_PARTITION=$TRAIN_PARTITION \
-        PICKPLACE_EVAL_PARTITION=$EVAL_PARTITION \
-    ros2 launch pickplace_rl_mobile rl_train.launch.py \
-        load_model:="$MODEL_PATH" \
-        timesteps:="$TIMESTEPS" \
-        save_dir:="$SAVE_DIR" \
-        curriculum_stage:="$CURRICULUM_STAGE" \
-        algo:="$ALGO" \
-        policy_arch:="$POLICY_ARCH" \
-        adaptive_curriculum:="$ADAPTIVE_CURRICULUM" &
-else
-    env ROS_DOMAIN_ID=$TRAIN_DOMAIN GZ_PARTITION=$TRAIN_PARTITION \
-        PICKPLACE_DOMAIN_BASE=$TRAIN_DOMAIN PICKPLACE_TRAIN_PARTITION=$TRAIN_PARTITION \
-        PICKPLACE_EVAL_PARTITION=$EVAL_PARTITION \
-    ros2 launch pickplace_rl_mobile rl_train.launch.py \
-        timesteps:="$TIMESTEPS" \
-        save_dir:="$SAVE_DIR" \
-        curriculum_stage:="$CURRICULUM_STAGE" \
-        algo:="$ALGO" \
-        policy_arch:="$POLICY_ARCH" \
-        adaptive_curriculum:="$ADAPTIVE_CURRICULUM" &
+# ros2 launch's CLI parser rejects a value-less 'name:=' argument, so
+# gradient_steps (empty by default — rl_train.launch.py's own default
+# already means "use algorithm/resume setting") must only be forwarded
+# when the user actually set --gradient-steps or --fast.
+RL_TRAIN_ARGS=(
+    timesteps:="$TIMESTEPS"
+    save_dir:="$SAVE_DIR"
+    curriculum_stage:="$CURRICULUM_STAGE"
+    algo:="$ALGO"
+    policy_arch:="$POLICY_ARCH"
+    adaptive_curriculum:="$ADAPTIVE_CURRICULUM"
+    adaptive_domain_randomization:="$ADAPTIVE_DOMAIN_RANDOMIZATION"
+    adr_step:="$ADR_STEP"
+    eval_freq:="$EVAL_FREQ"
+    n_eval_episodes:="$N_EVAL_EPISODES"
+    checkpoint_freq:="$CHECKPOINT_FREQ"
+)
+if [ -n "$GRADIENT_STEPS" ]; then
+    RL_TRAIN_ARGS+=(gradient_steps:="$GRADIENT_STEPS")
 fi
+if [ -n "$MODEL_PATH" ]; then
+    RL_TRAIN_ARGS+=(load_model:="$MODEL_PATH")
+fi
+
+env ROS_DOMAIN_ID=$TRAIN_DOMAIN GZ_PARTITION=$TRAIN_PARTITION \
+    PICKPLACE_DOMAIN_BASE=$TRAIN_DOMAIN PICKPLACE_TRAIN_PARTITION=$TRAIN_PARTITION \
+    PICKPLACE_EVAL_PARTITION=$EVAL_PARTITION \
+ros2 launch pickplace_rl_mobile rl_train.launch.py "${RL_TRAIN_ARGS[@]}" &
 TRAIN_PID=$!
 
 wait

@@ -181,6 +181,9 @@ class TransformerFeaturesExtractor(BaseFeaturesExtractor):
 
 
 def policy_kwargs_for(policy_arch: str, net_arch=(512, 512, 512)) -> dict:
+    """net_arch is ignored for policy_arch='transformer' — its head is fixed
+    at [256, 256]; the transformer's expressiveness lives in the tokenized
+    attention encoder ahead of it, not the MLP head."""
     if policy_arch == 'transformer':
         return dict(
             features_extractor_class=TransformerFeaturesExtractor,
@@ -196,19 +199,39 @@ def policy_name_for(algo: str) -> str:
     return 'MlpLstmPolicy' if algo == 'ppo_lstm' else 'MlpPolicy'
 
 
+LR_SCHEDULES = ('constant', 'linear')
+
+
+def linear_schedule(initial_value: float, final_value: float = 0.0):
+    """SB3 learning-rate schedule that decays linearly from initial_value to
+    final_value over training. SB3 calls the returned function with
+    progress_remaining going from 1.0 (start) to 0.0 (end)."""
+    def schedule(progress_remaining: float) -> float:
+        return final_value + progress_remaining * (initial_value - final_value)
+    return schedule
+
+
 def create_model(algo: str, env, policy_arch: str = 'mlp', tensorboard_log=None,
-                  device='auto', verbose=1, hparam_overrides: dict = None):
+                  device='auto', verbose=1, hparam_overrides: dict = None, net_arch=None,
+                  lr_schedule: str = 'constant'):
     if algo not in _ALGO_CLASSES:
         raise ValueError(f"Unknown algo '{algo}', expected one of {ALGOS}")
+    if lr_schedule not in LR_SCHEDULES:
+        raise ValueError(f"Unknown lr_schedule '{lr_schedule}', expected one of {LR_SCHEDULES}")
     algo_cls = _ALGO_CLASSES[algo]
+    policy_kwargs = (policy_kwargs_for(policy_arch, net_arch=net_arch) if net_arch is not None
+                      else policy_kwargs_for(policy_arch))
+    hp = hparams_for(algo, hparam_overrides)
+    if lr_schedule == 'linear':
+        hp['learning_rate'] = linear_schedule(hp['learning_rate'])
     return algo_cls(
         policy_name_for(algo),
         env,
-        policy_kwargs=policy_kwargs_for(policy_arch),
+        policy_kwargs=policy_kwargs,
         verbose=verbose,
         device=device,
         tensorboard_log=tensorboard_log,
-        **hparams_for(algo, hparam_overrides),
+        **hp,
     )
 
 

@@ -96,13 +96,61 @@ class DomainRandomizer:
         noisy_action = randomizer.add_action_noise(action)
     """
 
+    # Nuisance parameters scaled by set_difficulty() for Automatic Domain
+    # Randomization (see ADRCallback in train_rl.py). Object/target position
+    # ranges are intentionally excluded — those are already widened per
+    # curriculum stage by PickPlaceEnv._apply_stage_randomization.
+    _ADR_NARROW = {
+        'obj_size_range': (1.0, 1.0),
+        'friction_range': (1.0, 1.0),
+        'mass_noise_std': 0.0,
+        'gravity_noise_std': 0.0,
+        'joint_pos_noise_std': 0.0,
+        'odom_pos_noise_std': 0.0,
+        'odom_theta_noise_std': 0.0,
+        'action_noise_std': 0.0,
+        'perception_pos_noise_std': 0.0,
+        'action_latency_steps_range': (0, 0),
+        'perception_latency_steps_range': (0, 0),
+        'hue_shift_range': (0.0, 0.0),
+        'saturation_range': (1.0, 1.0),
+        'brightness_range': (1.0, 1.0),
+    }
+
     def __init__(self, config: RandomizationConfig = None):
         self.config = config or RandomizationConfig()
         self.rng = np.random.default_rng()
         self.current_episode_params = {}
         self._action_buffer = deque()
         self._perception_buffer = deque()
+        # Wide (level=1.0) endpoints are this instance's starting values, so
+        # any caller-supplied overrides become the ADR ceiling too.
+        self._adr_wide = {name: getattr(self.config, name) for name in self._ADR_NARROW}
+        self._adr_level = 1.0
         self._randomize_episode_params()
+
+    def set_difficulty(self, level: float) -> None:
+        """Scale nuisance-randomization ranges linearly between a narrow
+        baseline (level=0, ~no variation) and this randomizer's original wide
+        ranges (level=1). Driven by eval performance via ADRCallback in
+        train_rl.py, following OpenAI's Automatic Domain Randomization: start
+        narrow so the policy learns the base motion before facing full
+        randomization, then widen as it demonstrates it can handle more."""
+        level = float(np.clip(level, 0.0, 1.0))
+        self._adr_level = level
+        for name, narrow in self._ADR_NARROW.items():
+            wide = self._adr_wide[name]
+            if isinstance(wide, tuple):
+                lo = narrow[0] + level * (wide[0] - narrow[0])
+                hi = narrow[1] + level * (wide[1] - narrow[1])
+                if isinstance(wide[0], int) and isinstance(narrow[0], int):
+                    lo, hi = int(round(lo)), int(round(hi))
+                setattr(self.config, name, (lo, hi))
+            else:
+                setattr(self.config, name, narrow + level * (wide - narrow))
+
+    def get_difficulty(self) -> float:
+        return self._adr_level
 
     def seed(self, seed: int):
         """Set random seed for reproducibility."""
