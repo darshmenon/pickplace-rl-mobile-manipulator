@@ -29,6 +29,7 @@ setup(
             'worlds/pickplace_world.world',
             'worlds/pickplace_world_obstacles.world',
             'worlds/pickplace_world_clutter.world',
+            'worlds/pickplace_world_warehouse.world',
         ]),
         ('share/' + package_name + '/config', [
             'config/nav2_params.yaml',
@@ -50,6 +51,7 @@ setup(
             'manip_rl_node = pickplace_rl_mobile.manip_rl_node:main',
             'safety_guard = pickplace_rl_mobile.safety_guard:main',
             'train_rl = pickplace_rl_mobile.train_rl:main',
+            'optimize_rl = pickplace_rl_mobile.optimize_rl:main',
             'test_policy = pickplace_rl_mobile.test_policy:main',
             'smart_pick_place = pickplace_rl_mobile.smart_pick_place:main',
             'vla_action_node = pickplace_rl_mobile.vla_action_node:main',

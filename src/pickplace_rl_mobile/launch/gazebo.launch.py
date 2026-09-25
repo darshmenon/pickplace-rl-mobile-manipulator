@@ -102,7 +102,9 @@ def generate_launch_description():
     world_arg = DeclareLaunchArgument(
         'world', default_value='pickplace_world.world',
         description='World SDF filename under worlds/ (e.g. pickplace_world.world, '
-                     'pickplace_world_obstacles.world, pickplace_world_clutter.world)'
+                     'pickplace_world_obstacles.world, pickplace_world_clutter.world, '
+                     'pickplace_world_warehouse.world — same task objects, warehouse dressing '
+                     'for demos/screenshots; slower to load, avoid for training)'
     )
 
     pkg_dir = get_pickplace_share_dir()
@@ -118,12 +120,24 @@ def generate_launch_description():
     robot_description = resolve_package_uris(raw_urdf)
 
     # Also set GZ_SIM_RESOURCE_PATH so Gazebo can find model:// and package:// assets
+    resource_share_dirs = [
+        os.path.join(ur_description_share, '..'),
+        os.path.join(robotiq_share, '..'),
+    ]
+    try:
+        # ur_gazebo vendors the AWS RoboMaker warehouse/residential model set under
+        # <share>/models — only needed by worlds/pickplace_world_warehouse.world's
+        # model:// includes, but harmless to add unconditionally for every world.
+        # Unlike ur_description/robotiq above, GZ_SIM_RESOURCE_PATH needs the
+        # models/ dir itself here, not its parent (see the working reference in
+        # ur_gazebo/launch/ur.gazebo.launch.py's own gazebo_models_path).
+        ur_gazebo_share = get_package_share_directory('ur_gazebo')
+        resource_share_dirs.append(os.path.join(ur_gazebo_share, 'models'))
+    except Exception:
+        pass
     set_gz_resource_path = AppendEnvironmentVariable(
         'GZ_SIM_RESOURCE_PATH',
-        ':'.join([
-            os.path.join(ur_description_share, '..'),
-            os.path.join(robotiq_share, '..'),
-        ])
+        ':'.join(resource_share_dirs)
     )
     set_gz_control_plugin_path = AppendEnvironmentVariable(
         'GZ_SIM_SYSTEM_PLUGIN_PATH',

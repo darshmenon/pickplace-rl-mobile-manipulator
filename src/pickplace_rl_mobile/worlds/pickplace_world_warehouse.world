@@ -1,0 +1,229 @@
+<?xml version="1.0"?>
+<!--
+  Warehouse-dressed variant of pickplace_world.world, for demos/screenshots/
+  videos of a trained policy rather than for training itself (training stays
+  on the minimal pickplace_world.world — fewer meshes means faster resets).
+
+  The task-critical objects (object_bin, target_zone, pickup_object,
+  static_camera_model) keep the exact same names/poses as pickplace_world.world,
+  so anything that depends on them (spawn poses, the dynamic_pose bridge,
+  reward/observation code) works unchanged.
+
+  The warehouse shell around them is built from the AWS RoboMaker Small
+  Warehouse model set (https://github.com/aws-robotics/aws-robomaker-small-warehouse-world,
+  Apache-2.0), already vendored under src/ur_gazebo/models/aws_robomaker_warehouse_*
+  for the ur_gazebo demo world — reused here via model:// rather than
+  re-downloaded. Placed on a generous radius around the workspace so their
+  exact mesh footprint can't intersect the robot regardless of orientation;
+  nothing here is a collision hazard for the pick-and-place task itself.
+-->
+<sdf version="1.7">
+  <world name="pickplace_world">
+
+    <physics name="bullet_physics" type="bullet_featherstone">
+      <max_step_size>0.001</max_step_size>
+      <real_time_factor>1</real_time_factor>
+    </physics>
+
+    <!-- Lighting -->
+    <include>
+      <uri>
+        https://fuel.gazebosim.org/1.0/OpenRobotics/models/Sun
+      </uri>
+    </include>
+
+    <include>
+      <uri>model://aws_robomaker_warehouse_Lamp_01</uri>
+      <name>warehouse_lamp_1</name>
+      <pose>0.6 0 4.0 0 0 0</pose>
+    </include>
+
+    <!-- Warehouse floor (replaces the flat Fuel Ground Plane) -->
+    <include>
+      <uri>model://aws_robomaker_warehouse_GroundB_01</uri>
+      <name>warehouse_ground</name>
+      <pose>0 0 0 0 0 0</pose>
+    </include>
+
+    <!-- Perimeter walls, well outside the ~1m robot workspace around the bin -->
+    <include>
+      <uri>model://aws_robomaker_warehouse_WallB_01</uri>
+      <name>warehouse_wall_north</name>
+      <pose>0.6 6 0 0 0 0</pose>
+    </include>
+    <include>
+      <uri>model://aws_robomaker_warehouse_WallB_01</uri>
+      <name>warehouse_wall_south</name>
+      <pose>0.6 -6 0 0 0 3.14159</pose>
+    </include>
+    <include>
+      <uri>model://aws_robomaker_warehouse_WallB_01</uri>
+      <name>warehouse_wall_east</name>
+      <pose>7 0 0 0 0 1.5708</pose>
+    </include>
+    <include>
+      <uri>model://aws_robomaker_warehouse_WallB_01</uri>
+      <name>warehouse_wall_west</name>
+      <pose>-6 0 0 0 0 -1.5708</pose>
+    </include>
+
+    <!-- Background shelving, well clear of the workspace -->
+    <include>
+      <uri>model://aws_robomaker_warehouse_ShelfD_01</uri>
+      <name>warehouse_shelf_1</name>
+      <pose>-4 4 0 0 0 0</pose>
+    </include>
+    <include>
+      <uri>model://aws_robomaker_warehouse_ShelfE_01</uri>
+      <name>warehouse_shelf_2</name>
+      <pose>-4 1.5 0 0 0 0</pose>
+    </include>
+    <include>
+      <uri>model://aws_robomaker_warehouse_ShelfF_01</uri>
+      <name>warehouse_shelf_3</name>
+      <pose>-4 -1.5 0 0 0 0</pose>
+    </include>
+
+    <!-- Set dressing, off to the side -->
+    <include>
+      <uri>model://aws_robomaker_warehouse_PalletJackB_01</uri>
+      <name>warehouse_pallet_jack</name>
+      <pose>3 -3 0 0 0 1.5708</pose>
+    </include>
+    <include>
+      <uri>model://aws_robomaker_warehouse_ClutteringA_01</uri>
+      <name>warehouse_clutter_1</name>
+      <pose>-3 -4 0 0 0 0</pose>
+    </include>
+    <include>
+      <uri>model://aws_robomaker_warehouse_Bucket_01</uri>
+      <name>warehouse_bucket</name>
+      <pose>1.5 -1.2 0 0 0 0</pose>
+    </include>
+
+    <!-- Object Bin (solid platform — pickup object rests on top) -->
+    <model name="object_bin">
+      <static>true</static>
+      <pose>0.6 0 0 0 0 0</pose>
+      <link name="platform">
+        <pose>0 0 0.05 0 0 0</pose>
+        <visual name="visual">
+          <geometry>
+            <box><size>0.38 0.38 0.10</size></box>
+          </geometry>
+          <material>
+            <ambient>0.5 0.3 0.1 1</ambient>
+            <diffuse>0.5 0.3 0.1 1</diffuse>
+          </material>
+        </visual>
+        <collision name="collision">
+          <geometry>
+            <box><size>0.38 0.38 0.10</size></box>
+          </geometry>
+        </collision>
+      </link>
+    </model>
+
+    <!-- Target Zone (placement area) -->
+    <model name="target_zone">
+      <static>true</static>
+      <pose>0.6 0.5 0.001 0 0 0</pose>
+      <link name="marker">
+        <visual name="visual">
+          <geometry>
+            <cylinder>
+              <radius>0.15</radius>
+              <length>0.002</length>
+            </cylinder>
+          </geometry>
+          <material>
+            <ambient>0 1 0 0.5</ambient>
+            <diffuse>0 1 0 0.5</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- Pickable Object: 6.5x6.5x6.5 cm solid box on top of platform (platform top=0.10m, cube half=0.0325m) -->
+    <model name="pickup_object">
+      <pose>0.6 0 0.1325 0 0 0</pose>
+      <link name="link">
+        <inertial>
+          <!-- 500g solid cube: side=0.065m
+               Ixx=Iyy=Izz = m*(a²+b²)/12 = 0.5*(0.004225+0.004225)/12 ~= 0.000352 -->
+          <mass>0.5</mass>
+          <inertia>
+            <ixx>0.000352</ixx>
+            <iyy>0.000352</iyy>
+            <izz>0.000352</izz>
+          </inertia>
+        </inertial>
+        <velocity_decay>
+          <linear>0.5</linear>
+          <angular>1.0</angular>
+        </velocity_decay>
+        <visual name="visual">
+          <geometry>
+            <box>
+              <size>0.065 0.065 0.065</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>1 0 0 1</ambient>
+            <diffuse>1 0 0 1</diffuse>
+          </material>
+        </visual>
+        <collision name="collision">
+          <geometry>
+            <box>
+              <size>0.065 0.065 0.065</size>
+            </box>
+          </geometry>
+          <surface>
+            <friction>
+              <ode>
+                <mu>1.5</mu>
+                <mu2>1.5</mu2>
+              </ode>
+            </friction>
+            <contact>
+              <ode>
+                <kp>100000</kp>
+                <kd>500</kd>
+                <max_vel>0.01</max_vel>
+                <min_depth>0.001</min_depth>
+              </ode>
+            </contact>
+          </surface>
+        </collision>
+      </link>
+    </model>
+
+    <!-- Static Camera (world-fixed, no jitter) -->
+    <model name="static_camera_model">
+      <static>true</static>
+      <pose>0.6 0.0 0.8 0 1.5708 0</pose>
+      <link name="camera_link">
+        <sensor name="camera_head" type="rgbd_camera">
+          <camera>
+            <horizontal_fov>1.5184</horizontal_fov>
+            <image>
+              <width>424</width>
+              <height>240</height>
+            </image>
+            <clip>
+              <near>0.05</near>
+              <far>5.0</far>
+            </clip>
+          </camera>
+          <always_on>1</always_on>
+          <gz_frame_id>camera_head_depth_optical_frame</gz_frame_id>
+          <topic>camera_head</topic>
+          <update_rate>5</update_rate>
+          <visualize>true</visualize>
+        </sensor>
+      </link>
+    </model>
+
+  </world>
+</sdf>
