@@ -65,7 +65,7 @@ def generate_launch_description():
     algo_arg = DeclareLaunchArgument(
         'algo',
         default_value='tqc',
-        description='RL algorithm: tqc, sac, ppo, or ppo_lstm'
+        description='RL algorithm: tqc, sac, crossq, ppo, or ppo_lstm'
     )
     policy_arch_arg = DeclareLaunchArgument(
         'policy_arch',

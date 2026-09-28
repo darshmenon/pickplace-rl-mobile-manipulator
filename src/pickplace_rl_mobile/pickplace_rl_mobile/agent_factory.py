@@ -29,15 +29,17 @@ from sb3_contrib import TQC, RecurrentPPO
 from stable_baselines3 import PPO, SAC
 from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
 
-ALGOS = ('tqc', 'sac', 'ppo', 'ppo_lstm')
+from pickplace_rl_mobile.crossq import CrossQ, CrossQPolicy
+
+ALGOS = ('tqc', 'sac', 'crossq', 'ppo', 'ppo_lstm')
 POLICY_ARCHS = ('mlp', 'transformer')
 
-_ALGO_CLASSES = {'tqc': TQC, 'sac': SAC, 'ppo': PPO, 'ppo_lstm': RecurrentPPO}
+_ALGO_CLASSES = {'tqc': TQC, 'sac': SAC, 'crossq': CrossQ, 'ppo': PPO, 'ppo_lstm': RecurrentPPO}
 
 # Off-policy algorithms use a replay buffer and an auto-tunable entropy
 # coefficient tensor; on-policy algorithms (PPO family) use neither.
-_OFF_POLICY_ALGOS = {'tqc', 'sac'}
-_ENTROPY_TUNABLE_ALGOS = {'tqc', 'sac'}
+_OFF_POLICY_ALGOS = {'tqc', 'sac', 'crossq'}
+_ENTROPY_TUNABLE_ALGOS = {'tqc', 'sac', 'crossq'}
 
 # Built-in fallback hyperparameters, used when config/algo_hparams.yaml is
 # missing or doesn't define a given algorithm. These match the values
@@ -51,6 +53,17 @@ _DEFAULT_HPARAMS = {
     'sac': dict(
         learning_rate=3e-4, buffer_size=1_000_000, learning_starts=1000,
         batch_size=1024, tau=0.005, gamma=0.99, train_freq=1, gradient_steps=4,
+        ent_coef=0.3,
+    ),
+    'crossq': dict(
+        # Higher learning_rate and lower gradient_steps than tqc/sac per the
+        # CrossQ paper — dropping the target critic removes the main reason
+        # to keep UTD low, but the point of CrossQ is matching SAC's sample
+        # efficiency at a *lower* wall-clock cost, which gradient_steps=4
+        # would give up. tau/target_update_interval are accepted (SAC.__init__
+        # requires them) but unused — see crossq.py.
+        learning_rate=1e-3, buffer_size=1_000_000, learning_starts=1000,
+        batch_size=1024, tau=0.005, gamma=0.99, train_freq=1, gradient_steps=1,
         ent_coef=0.3,
     ),
     'ppo': dict(
@@ -195,7 +208,10 @@ def policy_kwargs_for(policy_arch: str, net_arch=(512, 512, 512)) -> dict:
     return dict(net_arch=list(net_arch))
 
 
-def policy_name_for(algo: str) -> str:
+def policy_name_for(algo: str):
+    if algo == 'crossq':
+        # Not one of SB3's registered string aliases — pass the class directly.
+        return CrossQPolicy
     return 'MlpLstmPolicy' if algo == 'ppo_lstm' else 'MlpPolicy'
 
 
@@ -221,6 +237,10 @@ def create_model(algo: str, env, policy_arch: str = 'mlp', tensorboard_log=None,
     algo_cls = _ALGO_CLASSES[algo]
     policy_kwargs = (policy_kwargs_for(policy_arch, net_arch=net_arch) if net_arch is not None
                       else policy_kwargs_for(policy_arch))
+    if algo == 'crossq':
+        # CrossQ paper recommends Adam beta1=0.5 (vs PyTorch's default 0.9)
+        # for stability without a target network.
+        policy_kwargs.setdefault('optimizer_kwargs', dict(betas=(0.5, 0.999)))
     hp = hparams_for(algo, hparam_overrides)
     if lr_schedule == 'linear':
         hp['learning_rate'] = linear_schedule(hp['learning_rate'])

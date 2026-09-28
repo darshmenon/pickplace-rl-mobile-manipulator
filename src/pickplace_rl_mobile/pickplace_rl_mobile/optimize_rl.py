@@ -32,7 +32,7 @@ from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv, VecNorm
 from pickplace_rl_mobile import agent_factory
 from pickplace_rl_mobile.train_rl import make_env
 
-_TUNABLE_ALGOS = ('tqc', 'sac')
+_TUNABLE_ALGOS = ('tqc', 'sac', 'crossq')
 
 # The train env below runs in-process against whichever Gazebo world the user
 # already launched (ambient ROS_DOMAIN_ID, no override). Eval needs its own
