@@ -53,6 +53,17 @@ _GRIPPER_JOINT_MAX = 0.8
 
 _OBJECT_HALF_SIZE = 0.0325  # 6.5cm cube, matches DomainRandomizer's default obj_size
 
+# Real robot's Gazebo DiffDrive plugin limits (diff_drive_robot-main/urdf/
+# gazebo_control.xacro): wheel_separation=0.35, wheel_radius=0.1,
+# wheel_acceleration=1.0 rad/s^2. The MuJoCo base is still unconstrained
+# world-frame DOFs (no wheel contact), but matching these speed/accel limits
+# keeps commanded base motion physically comparable to the real robot instead
+# of being instantaneous and unbounded.
+_MAX_LINEAR_SPEED = 2.0  # m/s
+_MAX_ANGULAR_SPEED = 3.14  # rad/s
+_LINEAR_ACCEL = 0.1  # m/s^2, wheel_radius * wheel_acceleration
+_ANGULAR_ACCEL = 2 * 0.1 * 1.0 / 0.35  # rad/s^2, 2*wheel_radius*wheel_acceleration/wheel_separation
+
 
 def _build_scene_spec() -> mujoco.MjSpec:
     """Mobile base + ground + platform + object. The arm/gripper assembly is
@@ -149,6 +160,11 @@ class PickPlaceEnvMuJoCo(PickPlaceEnvBase):
 
         mujoco.mj_forward(self.model, self.data)
 
+        self._cmd_linear = 0.0
+        self._cmd_angular = 0.0
+        self._target_linear = 0.0
+        self._target_angular = 0.0
+
         self._viewer = None
         if render:
             self._viewer = mujoco.viewer.launch_passive(self.model, self.data)
@@ -190,12 +206,23 @@ class PickPlaceEnvMuJoCo(PickPlaceEnvBase):
         self.data.ctrl[self._gripper_act_adr] = frac / _GRIPPER_JOINT_MAX * 255.0
 
     def _drive_base(self, linear, angular):
-        theta = float(self.base_pose[2])
-        self.data.qvel[self._base_x_qvel] = linear * np.cos(theta)
-        self.data.qvel[self._base_y_qvel] = linear * np.sin(theta)
-        self.data.qvel[self._base_yaw_qvel] = angular
+        # Speed-limited target; the actual ramp to this target (accel-limited
+        # like the real robot's Gazebo DiffDrive plugin) happens once per
+        # control step in _advance_physics(), which is where the real dt is
+        # available.
+        self._target_linear = float(np.clip(linear, -_MAX_LINEAR_SPEED, _MAX_LINEAR_SPEED))
+        self._target_angular = float(np.clip(angular, -_MAX_ANGULAR_SPEED, _MAX_ANGULAR_SPEED))
 
     def _advance_physics(self, dt):
+        self._cmd_linear += np.clip(
+            self._target_linear - self._cmd_linear, -_LINEAR_ACCEL * dt, _LINEAR_ACCEL * dt)
+        self._cmd_angular += np.clip(
+            self._target_angular - self._cmd_angular, -_ANGULAR_ACCEL * dt, _ANGULAR_ACCEL * dt)
+        theta = float(self.base_pose[2])
+        self.data.qvel[self._base_x_qvel] = self._cmd_linear * np.cos(theta)
+        self.data.qvel[self._base_y_qvel] = self._cmd_linear * np.sin(theta)
+        self.data.qvel[self._base_yaw_qvel] = self._cmd_angular
+
         n_sub = max(1, int(round(dt / self.model.opt.timestep)))
         for _ in range(n_sub):
             mujoco.mj_step(self.model, self.data)
@@ -223,7 +250,10 @@ class PickPlaceEnvMuJoCo(PickPlaceEnvBase):
         pass
 
     def _wait_until_ready(self):
-        pass
+        self._cmd_linear = 0.0
+        self._cmd_angular = 0.0
+        self._target_linear = 0.0
+        self._target_angular = 0.0
 
     def close(self):
         if self._viewer is not None:
