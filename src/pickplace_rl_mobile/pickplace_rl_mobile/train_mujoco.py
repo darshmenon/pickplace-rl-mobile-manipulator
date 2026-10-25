@@ -12,6 +12,12 @@ every phase (it is locked in phases 1-3 otherwise).
 import argparse
 import os
 
+# Must be imported before tensorflow/jax get pulled in transitively below
+# (via gymnasium/stable_baselines3) — otherwise torch._dynamo's lazy import
+# from inside Adam's optimizer __init__ segfaults on this install.
+import torch
+import torch._dynamo
+
 import numpy as np
 from stable_baselines3 import PPO, SAC
 from stable_baselines3.common.env_util import make_vec_env
@@ -68,7 +74,8 @@ def main():
     args = p.parse_args()
 
     venv = make_vec_env(_make_env(args.whole_body, not args.no_assist),
-                        n_envs=args.n_envs, vec_env_cls=SubprocVecEnv)
+                        n_envs=args.n_envs, vec_env_cls=SubprocVecEnv,
+                        vec_env_kwargs=dict(start_method='spawn'))
     venv = VecNormalize(venv, clip_obs=10.0)
     model = _build_model(args.algo, venv, args.device)
     model.learn(args.timesteps)
