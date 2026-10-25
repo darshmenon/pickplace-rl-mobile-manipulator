@@ -978,10 +978,19 @@ class PickPlaceEnvBase(gym.Env):
             # the robot is facing the object. Previously this could trigger at
             # the zero joint pose, handing RL an approach state with the gripper
             # laterally offset from the cube.
+            #
+            # Also require the chassis to have actually finished docking
+            # (bx close to SAFE_CHASSIS_X). Without this, ee_dist_xy<0.32 can
+            # be satisfied purely by the arm's own fold pose before the base
+            # has driven forward at all, handing off with the object at or
+            # beyond the arm's workspace edge — the Cartesian approach-assist
+            # then can never close the remaining gap and drifts indefinitely
+            # (observed as the shoulder-pan joint winding up without bound).
             ee_global = self.get_global_ee_pos()
             ee_dist_xy = np.linalg.norm(ee_global[:2] - obj_pos[:2])
             arm_pose_err = max(abs(pan_err), abs(s_err), abs(e_err), abs(w1_err), abs(w2_err), abs(w3_err))
-            if ee_dist_xy < 0.32 and abs(angle_err) < 0.4 and arm_pose_err < 0.15:
+            docked = bx >= SAFE_CHASSIS_X - 0.03
+            if docked and ee_dist_xy < 0.32 and abs(angle_err) < 0.4 and arm_pose_err < 0.15:
                 self._drive_base(0.0, 0.0)
                 break
 
