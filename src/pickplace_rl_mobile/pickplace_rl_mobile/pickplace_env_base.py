@@ -98,8 +98,10 @@ class PickPlaceEnvBase(gym.Env):
         observation_mode='full',
         enable_domain_randomization=True,
         enable_assist=True,
+        whole_body=False,
     ):
         super().__init__()
+        self.whole_body = bool(whole_body)
         self.curriculum_stage = int(curriculum_stage)
         self._pending_curriculum_stage = None
         self._pending_randomization_level = None
@@ -819,7 +821,7 @@ class PickPlaceEnvBase(gym.Env):
         gripper_target = 0.8 if gripper_command > 0 else 0.0
 
         # Lock base during manipulation phases (1-3) — arm reaches from pregrasp position
-        if self.current_phase in [1, 2, 3]:
+        if self.current_phase in [1, 2, 3] and not self.whole_body:
             base_linear_vel = 0.0
             base_angular_vel = 0.0
         else:
