@@ -20,6 +20,7 @@ import torch._dynamo
 
 import numpy as np
 from stable_baselines3 import PPO, SAC
+from stable_baselines3.common.callbacks import CheckpointCallback
 from stable_baselines3.common.env_util import make_vec_env
 from stable_baselines3.common.vec_env import SubprocVecEnv, VecNormalize
 
@@ -71,6 +72,8 @@ def main():
     p.add_argument('--no-assist', action='store_true')
     p.add_argument('--device', default='cpu')
     p.add_argument('--save-dir', default='./rl_models/mujoco')
+    p.add_argument('--checkpoint-freq', type=int, default=20_000,
+                    help='env steps between checkpoints (0 disables)')
     args = p.parse_args()
 
     venv = make_vec_env(_make_env(args.whole_body, not args.no_assist),
@@ -78,9 +81,17 @@ def main():
                         vec_env_kwargs=dict(start_method='spawn'))
     venv = VecNormalize(venv, clip_obs=10.0)
     model = _build_model(args.algo, venv, args.device)
-    model.learn(args.timesteps)
 
     os.makedirs(args.save_dir, exist_ok=True)
+    callback = None
+    if args.checkpoint_freq > 0:
+        callback = CheckpointCallback(
+            save_freq=max(1, args.checkpoint_freq // args.n_envs),
+            save_path=args.save_dir, name_prefix=args.algo,
+            save_vecnormalize=True, verbose=1,
+        )
+    model.learn(args.timesteps, callback=callback)
+
     model.save(os.path.join(args.save_dir, f'{args.algo}_model'))
     venv.save(os.path.join(args.save_dir, f'{args.algo}_vecnormalize.pkl'))
 
