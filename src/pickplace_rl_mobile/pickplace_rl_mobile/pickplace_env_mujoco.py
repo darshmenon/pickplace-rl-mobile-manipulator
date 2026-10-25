@@ -89,7 +89,7 @@ def _build_scene_spec() -> mujoco.MjSpec:
       <freejoint name="object_free"/>
       <geom name="object_geom" type="box"
             size="{_OBJECT_HALF_SIZE} {_OBJECT_HALF_SIZE} {_OBJECT_HALF_SIZE}"
-            rgba="0.8 0.15 0.15 1" mass="0.15" friction="1.0 0.05 0.01"
+            rgba="0.8 0.15 0.15 1" mass="0.15" friction="1.5 0.005 0.0001"
             solimp="0.95 0.99 0.001" solref="0.004 1"/>
     </body>
 
