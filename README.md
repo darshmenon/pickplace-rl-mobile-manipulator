@@ -62,12 +62,21 @@ A classical whole-body controller (WBC) drives the arm and base together in MuJo
 | Demo collection | `collect_demos.py` | Parallel WBC rollouts with action noise, keeps successful episodes only |
 | BC and DAgger | `bc_finetune.py` | Clone the WBC into a TQC actor, DAgger relabelling, optional TQC fine-tune |
 
-**Status:** the WBC succeeds on 8/8 evaluation seeds (100-107). The cloned policy is still weak (about 2/8 after DAgger), so RL fine-tuning from the cloned start is the next step.
+**Results** (MuJoCo, seeds 100-119, episodes run back to back, 400-step limit):
+
+| Controller | Success | Mean steps |
+|------------|---------|------------|
+| Whole-body controller | 20/20 | 117 |
+| Policy cloned from the WBC (BC only) | 19/20 | 133 |
+
+Demos are collected from 192 episodes with action noise (145 succeed, 23k transitions). The MuJoCo env resets to its initial state every episode, which the demos and evaluation depend on.
+
+**Gazebo:** `wbc_node` (launch with `wbc_pickplace.launch.py`) drives the Gazebo robot to the cube and closes the gripper, but the grasp does not hold yet. Next steps are contact debugging on the finger pads and RL fine-tuning from the cloned policy.
 
 ```bash
 python3 -m pickplace_rl_mobile.compare_wbc_policy --episodes 8
 python3 -m pickplace_rl_mobile.collect_demos --episodes 160 --workers 16
-python3 -m pickplace_rl_mobile.bc_finetune --demos demos/wbc_pinch.npz --dagger-iters 8
+python3 -m pickplace_rl_mobile.bc_finetune --demos demos/wbc_pinch.npz --bc-steps 16000
 ```
 
 ---

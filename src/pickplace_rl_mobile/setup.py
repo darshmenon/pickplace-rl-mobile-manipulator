@@ -13,6 +13,7 @@ setup(
         ('share/' + package_name + '/launch', [
             'launch/display_launch.py',
             'launch/gazebo.launch.py',
+            'launch/wbc_pickplace.launch.py',
             'launch/rl_train.launch.py',
             'launch/standalone_rl_training.launch.py',
             'launch/multi_world_training.launch.py',

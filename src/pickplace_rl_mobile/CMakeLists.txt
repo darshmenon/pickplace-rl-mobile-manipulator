@@ -50,6 +50,11 @@ install(PROGRAMS
   RENAME manip_rl_node
 )
 install(PROGRAMS
+  pickplace_rl_mobile/wbc_node.py
+  DESTINATION lib/${PROJECT_NAME}
+  RENAME wbc_node
+)
+install(PROGRAMS
   pickplace_rl_mobile/safety_guard.py
   DESTINATION lib/${PROJECT_NAME}
   RENAME safety_guard

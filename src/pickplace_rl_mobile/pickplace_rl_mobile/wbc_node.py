@@ -35,7 +35,6 @@ _ARM_JOINT_NAMES = [
     'shoulder_pan_joint', 'shoulder_lift_joint', 'elbow_joint',
     'wrist_1_joint', 'wrist_2_joint', 'wrist_3_joint',
 ]
-_GRIPPER_CLOSED_POS = 0.8  # Gazebo Robotiq finger_joint target for "closed"
 
 
 class WbcNode(Node):
@@ -46,19 +45,30 @@ class WbcNode(Node):
         self.declare_parameter('fallback_object_pos', [0.6, 0.0, 0.1325])
         self.declare_parameter('use_perception', True)
         self.declare_parameter('gravity_ff', 0.0)        # Gazebo holds the arm itself
-        self.declare_parameter('grasp_finger_pos', 0.35)  # finger_joint reading = cube held
+        self.declare_parameter('grasp_finger_pos', 0.25)  # finger_joint reading at or above this = closed on the cube
+        self.declare_parameter('grasp_finger_max', 0.70)  # above this the fingers closed on nothing
         self.declare_parameter('grasp_hold_ticks', 3)
+        # distance from gripper_base to the midpoint of the Gazebo finger pads (the
+        # MuJoCo gripper's pinch site sits at 0.145, 2 cm further out)
+        self.declare_parameter('tcp_offset', 0.125)
+        # Close onto the cube's width, not fully (0.8): over-squeezing makes the cube pop out of
+        # the pads (UR3_ROS2_PICK_AND_PLACE: closed * (1 - (width - 0.004) / stroke), stroke 0.085)
+        self.declare_parameter('grasp_close_target', 0.30)  # pad gap = cube width at ~0.23, so squeeze past it
 
         self.rate = float(self.get_parameter('rate').value)
         self.target = np.array(self.get_parameter('target_pos').value, dtype=float)
         self.object_pos = np.array(self.get_parameter('fallback_object_pos').value, dtype=float)
         self.use_perception = bool(self.get_parameter('use_perception').value)
         self.grasp_finger = float(self.get_parameter('grasp_finger_pos').value)
+        self.grasp_finger_max = float(self.get_parameter('grasp_finger_max').value)
         self.hold_ticks = int(self.get_parameter('grasp_hold_ticks').value)
+        self.close_target = float(self.get_parameter('grasp_close_target').value)
 
         # kinematic shadow of the robot, used only for Jacobians and phase tests
         self.env = PickPlaceEnvMuJoCo(enable_assist=False, whole_body=True,
                                       curriculum_stage=0, ee_site='pinch')
+        pinch_id = self.env.model.site('gripper_pinch').id
+        self.env.model.site_pos[pinch_id][2] = float(self.get_parameter('tcp_offset').value)
         self.ctrl = WholeBodyController(
             self.env, ee_site='pinch',
             grav_ff=float(self.get_parameter('gravity_ff').value))
@@ -129,10 +139,22 @@ class WbcNode(Node):
 
     def _update_phase(self):
         pinch = self.env.data.site_xpos[self.ctrl.pinch_id]
+        if not self.use_perception and self.phase >= 3:
+            # no cube pose feed: once grasped, the cube travels with the gripper
+            self.object_pos = pinch.copy()
         # fingers closed AND the cube between them (closing on air also reads as closed)
-        held = (self.finger > self.grasp_finger
+        self.get_logger().info(
+            f'ph={self.phase} stage={self.ctrl.stage} finger={self.finger:.3f} '
+            f'pinch={np.round(pinch, 3).tolist()} cube={np.round(self.object_pos, 3).tolist()}',
+            throttle_duration_sec=1.0)
+        held = (self.grasp_finger < self.finger < self.grasp_finger_max
                 and np.linalg.norm(self.object_pos - pinch) < 0.05)
         if self.phase in (1, 2):
+            if self.finger >= self.grasp_finger_max:  # closed on air, try again
+                self.get_logger().info('grasp missed, retrying')
+                self.ctrl.reset()
+                self.phase, self.closed_ticks = 1, 0
+                return
             self.phase = 2 if self.ctrl.hold > 0 else 1
             self.closed_ticks = self.closed_ticks + 1 if held else 0
             if self.closed_ticks >= self.hold_ticks:
@@ -164,6 +186,10 @@ class WbcNode(Node):
         self._update_phase()
         self.env.current_phase = self.phase
         a = self.ctrl.act()
+        if self.phase in (1, 2) and self.ctrl.hold > 0:
+            # the real arm lags its commands: hold still while the fingers close
+            a[:6] = 0.0
+            a[7:] = 0.0
         if self.phase == 5 and a[6] < 0 and self.finger < 0.1:
             self.done = True
             self._stop()
@@ -178,14 +204,14 @@ class WbcNode(Node):
         ns = int(_ARM_DT * 1e9)
         pt.time_from_start = Duration(sec=ns // 1_000_000_000, nanosec=ns % 1_000_000_000)
         traj = JointTrajectory()
-        traj.header.stamp = self.get_clock().now().to_msg()
+        # zero stamp = start now; a wall-clock stamp is far in the future of sim time
         traj.joint_names = _ARM_JOINT_NAMES
         traj.points = [pt]
         self._arm_pub.publish(traj)
 
         if self._grp.server_is_ready():
             goal = GripperCommand.Goal()
-            goal.command.position = _GRIPPER_CLOSED_POS if a[6] > 0 else 0.0
+            goal.command.position = self.close_target if a[6] > 0 else 0.0
             goal.command.max_effort = 50.0
             self._grp.send_goal_async(goal)
 
