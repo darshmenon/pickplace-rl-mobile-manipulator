@@ -49,6 +49,7 @@ setup(
         'console_scripts': [
             'perception_node = pickplace_rl_mobile.perception_node:main',
             'manip_rl_node = pickplace_rl_mobile.manip_rl_node:main',
+            'wbc_node = pickplace_rl_mobile.wbc_node:main',
             'safety_guard = pickplace_rl_mobile.safety_guard:main',
             'train_rl = pickplace_rl_mobile.train_rl:main',
             'optimize_rl = pickplace_rl_mobile.optimize_rl:main',

@@ -53,20 +53,19 @@ _GRIPPER_JOINT_MAX = 0.8
 
 _OBJECT_HALF_SIZE = 0.0325  # 6.5cm cube, matches DomainRandomizer's default obj_size
 
-# Real robot's Gazebo DiffDrive plugin limits (diff_drive_robot-main/urdf/
-# gazebo_control.xacro): wheel_separation=0.35, wheel_radius=0.1,
-# wheel_acceleration=1.0 rad/s^2. The MuJoCo base is still unconstrained
-# world-frame DOFs (no wheel contact), but matching these speed/accel limits
-# keeps commanded base motion physically comparable to the real robot instead
-# of being instantaneous and unbounded.
+# Gazebo DiffDrive plugin of the spawned robot (urdf/mobile_ur3.urdf):
+# wheel_separation=0.41, wheel_radius=0.08, wheel_acceleration=1.0 rad/s^2.
+# The MuJoCo base is still unconstrained world-frame DOFs (no wheel contact),
+# but matching these speed/accel limits keeps commanded base motion comparable
+# to the Gazebo robot, so a policy trained here sees the same base response.
 _MAX_LINEAR_SPEED = 2.0  # m/s
 _MAX_ANGULAR_SPEED = 3.14  # rad/s
-_LINEAR_ACCEL = 0.1  # m/s^2, wheel_radius * wheel_acceleration
-_ANGULAR_ACCEL = 2 * 0.1 * 1.0 / 0.35  # rad/s^2, 2*wheel_radius*wheel_acceleration/wheel_separation
+_LINEAR_ACCEL = 0.08  # m/s^2, wheel_radius * wheel_acceleration
+_ANGULAR_ACCEL = 2 * 0.08 * 1.0 / 0.41  # rad/s^2, 2*wheel_radius*wheel_acceleration/wheel_separation
 
 
-_WHEEL_RADIUS = 0.075  # matches the Gazebo robot's wheels (visual only here)
-_WHEEL_TRACK = 0.39    # distance between the left and right wheel pairs
+_WHEEL_RADIUS = 0.08   # mobile_ur3.urdf drive wheels (visual only here)
+_WHEEL_TRACK = 0.41    # wheel separation, as in mobile_ur3.urdf's DiffDrive plugin
 
 
 def _build_scene_spec() -> mujoco.MjSpec:
@@ -105,29 +104,23 @@ def _build_scene_spec() -> mujoco.MjSpec:
       <geom type="box" size="0.225 0.175 0.08" rgba="0.40 0.23 0.72 1"/>
 
       <!-- Visual-only wheels, same size/colour as the Gazebo diff-drive robot
-           (r=0.075, w=0.04, black). No contacts and ~zero mass, so they do not
+           (r=0.08, w=0.05, black, plus the two casters). No contacts and ~zero mass, so they do not
            change the dynamics; they are spun kinematically from the base
            velocity in _advance_physics(). -->
-      <body name="wheel_left_rear" pos="-0.15 0.195 -0.005">
-        <joint name="wheel_left_rear_joint" type="hinge" axis="0 1 0" damping="0"/>
-        <geom type="cylinder" size="0.075 0.02" euler="90 0 0" mass="0.001"
+      <body name="wheel_left" pos="0.1 0.205 0">
+        <joint name="wheel_left_joint" type="hinge" axis="0 1 0" damping="0"/>
+        <geom type="cylinder" size="0.08 0.025" euler="90 0 0" mass="0.001"
               rgba="0 0 0 1" contype="0" conaffinity="0"/>
       </body>
-      <body name="wheel_left_front" pos="0.15 0.195 -0.005">
-        <joint name="wheel_left_front_joint" type="hinge" axis="0 1 0" damping="0"/>
-        <geom type="cylinder" size="0.075 0.02" euler="90 0 0" mass="0.001"
+      <body name="wheel_right" pos="0.1 -0.205 0">
+        <joint name="wheel_right_joint" type="hinge" axis="0 1 0" damping="0"/>
+        <geom type="cylinder" size="0.08 0.025" euler="90 0 0" mass="0.001"
               rgba="0 0 0 1" contype="0" conaffinity="0"/>
       </body>
-      <body name="wheel_right_rear" pos="-0.15 -0.195 -0.005">
-        <joint name="wheel_right_rear_joint" type="hinge" axis="0 1 0" damping="0"/>
-        <geom type="cylinder" size="0.075 0.02" euler="90 0 0" mass="0.001"
-              rgba="0 0 0 1" contype="0" conaffinity="0"/>
-      </body>
-      <body name="wheel_right_front" pos="0.15 -0.195 -0.005">
-        <joint name="wheel_right_front_joint" type="hinge" axis="0 1 0" damping="0"/>
-        <geom type="cylinder" size="0.075 0.02" euler="90 0 0" mass="0.001"
-              rgba="0 0 0 1" contype="0" conaffinity="0"/>
-      </body>
+      <geom type="sphere" size="0.06" pos="0.18 0 -0.02" rgba="0 0 0 1"
+            contype="0" conaffinity="0" mass="0.001"/>
+      <geom type="sphere" size="0.06" pos="-0.20 0 -0.02" rgba="0 0 0 1"
+            contype="0" conaffinity="0" mass="0.001"/>
 
       <!-- Arm mount: no extra rotation here — the UR3 model's own geometry
            already embeds the 180 deg yaw that get_end_effector_pos() applies
@@ -190,10 +183,8 @@ class PickPlaceEnvMuJoCo(PickPlaceEnvBase):
         self._base_y_qvel = self.model.joint('base_y').dofadr[0]
         self._base_yaw_qvel = self.model.joint('base_yaw').dofadr[0]
 
-        self._left_wheel_dofs = [self.model.joint(f'wheel_left_{k}_joint').dofadr[0]
-                                 for k in ('rear', 'front')]
-        self._right_wheel_dofs = [self.model.joint(f'wheel_right_{k}_joint').dofadr[0]
-                                  for k in ('rear', 'front')]
+        self._left_wheel_dofs = [self.model.joint('wheel_left_joint').dofadr[0]]
+        self._right_wheel_dofs = [self.model.joint('wheel_right_joint').dofadr[0]]
 
         self._object_body_id = self.model.body('pickup_object').id
         self._object_qpos_adr = self.model.joint('object_free').qposadr[0]
@@ -327,6 +318,13 @@ class PickPlaceEnvMuJoCo(PickPlaceEnvBase):
 
     def _randomize_gravity(self):
         pass
+
+    def reset(self, seed=None, **kwargs):
+        # start every episode from the model's initial state; otherwise the base
+        # (and arm) pose from the end of the previous episode leaks into this one
+        mujoco.mj_resetData(self.model, self.data)
+        mujoco.mj_forward(self.model, self.data)
+        return super().reset(seed=seed, **kwargs)
 
     def _wait_until_ready(self):
         self._cmd_linear = 0.0

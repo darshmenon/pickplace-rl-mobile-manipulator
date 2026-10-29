@@ -36,6 +36,14 @@ arm_controller:
 gripper_controller:
   ros__parameters:
     joint: finger_joint
+    # From UR3_ROS2_PICK_AND_PLACE: with stall detection on, a stalled close goal holds
+    # the *measured* position, which drops the squeeze force and lets the cube slip.
+    # Accept the close goal within goal_tolerance instead (contact stops the finger
+    # short of the target) while the controller keeps driving toward it.
+    allow_stalling: false
+    stall_timeout: 0.5
+    stall_velocity_threshold: 0.001
+    goal_tolerance: 0.5
 # arm_with_gripper_controller:
 #   ros__parameters:
 #     joints:

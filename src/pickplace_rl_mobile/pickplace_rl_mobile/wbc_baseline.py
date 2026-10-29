@@ -62,11 +62,12 @@ def _skew(v):
 class WholeBodyController:
     def __init__(self, env: PickPlaceEnvMuJoCo, ee_site='pinch',
                  base_weight=2.0, arm_weight=0.02, damping=1e-3,
-                 q_nom=None, use_external=False):
+                 q_nom=None, use_external=False, grav_ff=_GRAV_FF):
         # use_external=False sends everything through the normalised 9-D action,
         # so recorded demos are exactly reproducible by a policy
         self.env = env
         self.use_external = use_external
+        self.grav_ff = grav_ff  # 0 on a real/Gazebo arm whose controller holds its own gravity
         self.model, self.data = env.model, env.data
         self.ee_site = ee_site
         self.site_id = self.model.site('gripper_pinch' if ee_site == 'pinch'
@@ -213,7 +214,7 @@ class WholeBodyController:
         # joint velocity = task-space solution + gravity feedforward, capped at
         # what the env can realise; sent through the 9-D action (default) or the
         # env.external_joint_vels hook.
-        arm = qd[:6] + _GRAV_FF * self.data.qfrc_bias[self.arm_dofs] / (_ARM_KP * _ARM_DT)
+        arm = qd[:6] + self.grav_ff * self.data.qfrc_bias[self.arm_dofs] / (_ARM_KP * _ARM_DT)
         peak = np.max(np.abs(arm))
         if peak > _ARM_MAX_VEL:
             arm = arm * (_ARM_MAX_VEL / peak)
