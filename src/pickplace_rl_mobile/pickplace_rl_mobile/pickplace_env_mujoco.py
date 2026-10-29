@@ -65,6 +65,10 @@ _LINEAR_ACCEL = 0.1  # m/s^2, wheel_radius * wheel_acceleration
 _ANGULAR_ACCEL = 2 * 0.1 * 1.0 / 0.35  # rad/s^2, 2*wheel_radius*wheel_acceleration/wheel_separation
 
 
+_WHEEL_RADIUS = 0.075  # matches the Gazebo robot's wheels (visual only here)
+_WHEEL_TRACK = 0.39    # distance between the left and right wheel pairs
+
+
 def _build_scene_spec() -> mujoco.MjSpec:
     """Mobile base + ground + platform + object. The arm/gripper assembly is
     attached onto this scene's `arm_attach` site by _build_model()."""
@@ -98,7 +102,32 @@ def _build_scene_spec() -> mujoco.MjSpec:
       <joint name="base_x" type="slide" axis="1 0 0" damping="0"/>
       <joint name="base_y" type="slide" axis="0 1 0" damping="0"/>
       <joint name="base_yaw" type="hinge" axis="0 0 1" damping="0"/>
-      <geom type="box" size="0.225 0.175 0.08" rgba="0.2 0.4 0.8 1"/>
+      <geom type="box" size="0.225 0.175 0.08" rgba="0.40 0.23 0.72 1"/>
+
+      <!-- Visual-only wheels, same size/colour as the Gazebo diff-drive robot
+           (r=0.075, w=0.04, black). No contacts and ~zero mass, so they do not
+           change the dynamics; they are spun kinematically from the base
+           velocity in _advance_physics(). -->
+      <body name="wheel_left_rear" pos="-0.15 0.195 -0.005">
+        <joint name="wheel_left_rear_joint" type="hinge" axis="0 1 0" damping="0"/>
+        <geom type="cylinder" size="0.075 0.02" euler="90 0 0" mass="0.001"
+              rgba="0 0 0 1" contype="0" conaffinity="0"/>
+      </body>
+      <body name="wheel_left_front" pos="0.15 0.195 -0.005">
+        <joint name="wheel_left_front_joint" type="hinge" axis="0 1 0" damping="0"/>
+        <geom type="cylinder" size="0.075 0.02" euler="90 0 0" mass="0.001"
+              rgba="0 0 0 1" contype="0" conaffinity="0"/>
+      </body>
+      <body name="wheel_right_rear" pos="-0.15 -0.195 -0.005">
+        <joint name="wheel_right_rear_joint" type="hinge" axis="0 1 0" damping="0"/>
+        <geom type="cylinder" size="0.075 0.02" euler="90 0 0" mass="0.001"
+              rgba="0 0 0 1" contype="0" conaffinity="0"/>
+      </body>
+      <body name="wheel_right_front" pos="0.15 -0.195 -0.005">
+        <joint name="wheel_right_front_joint" type="hinge" axis="0 1 0" damping="0"/>
+        <geom type="cylinder" size="0.075 0.02" euler="90 0 0" mass="0.001"
+              rgba="0 0 0 1" contype="0" conaffinity="0"/>
+      </body>
 
       <!-- Arm mount: no extra rotation here — the UR3 model's own geometry
            already embeds the 180 deg yaw that get_end_effector_pos() applies
@@ -160,6 +189,11 @@ class PickPlaceEnvMuJoCo(PickPlaceEnvBase):
         self._base_x_qvel = self.model.joint('base_x').dofadr[0]
         self._base_y_qvel = self.model.joint('base_y').dofadr[0]
         self._base_yaw_qvel = self.model.joint('base_yaw').dofadr[0]
+
+        self._left_wheel_dofs = [self.model.joint(f'wheel_left_{k}_joint').dofadr[0]
+                                 for k in ('rear', 'front')]
+        self._right_wheel_dofs = [self.model.joint(f'wheel_right_{k}_joint').dofadr[0]
+                                  for k in ('rear', 'front')]
 
         self._object_body_id = self.model.body('pickup_object').id
         self._object_qpos_adr = self.model.joint('object_free').qposadr[0]
@@ -262,6 +296,11 @@ class PickPlaceEnvMuJoCo(PickPlaceEnvBase):
         self.data.qvel[self._base_x_qvel] = self._cmd_linear * np.cos(theta)
         self.data.qvel[self._base_y_qvel] = self._cmd_linear * np.sin(theta)
         self.data.qvel[self._base_yaw_qvel] = self._cmd_angular
+        # spin the (visual) wheels as a diff drive would
+        w_left = (self._cmd_linear - self._cmd_angular * _WHEEL_TRACK / 2) / _WHEEL_RADIUS
+        w_right = (self._cmd_linear + self._cmd_angular * _WHEEL_TRACK / 2) / _WHEEL_RADIUS
+        self.data.qvel[self._left_wheel_dofs] = w_left
+        self.data.qvel[self._right_wheel_dofs] = w_right
 
         n_sub = max(1, int(round(dt / self.model.opt.timestep)))
         for _ in range(n_sub):
