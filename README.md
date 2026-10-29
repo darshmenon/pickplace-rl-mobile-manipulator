@@ -11,18 +11,13 @@
 
 A mobile manipulator that learns pick-and-place with **RL + a scripted pre-grasp routine**, plus a classical **whole-body controller (WBC)** used as a baseline and as a demonstrator for imitation. A differential-drive base carries a 6-DOF UR3 arm with a Robotiq 2F-85 gripper. **TQC** (Truncated Quantile Critics) learns the manipulation stages from dense reward shaping in Gazebo/ROS2, and the same robot runs in MuJoCo for fast WBC rollouts, behaviour cloning and DAgger.
 
-![Robot in MuJoCo](./images/mujoco_robot.png)
-
 ### Pick and place in action
 
-<p align="center"><img src="./images/mujoco_pick_place.gif" width="80%" alt="Whole-body controller pick and place in MuJoCo"></p>
-
 <p align="center">
-  <img src="./images/mujoco_grasp.png" width="32%" alt="Grasp">
-  <img src="./images/mujoco_carry.png" width="32%" alt="Carry">
-  <img src="./images/mujoco_place.png" width="32%" alt="Place">
+  <img src="./images/mujoco_pick_place.gif" width="49%" alt="Whole-body controller pick and place in MuJoCo">
+  <img src="./images/gazebo_carry.png" width="49%" alt="Whole-body controller carrying the cube in Gazebo">
 </p>
-<p align="center"><b>Grasp</b> &nbsp;→&nbsp; <b>Carry</b> &nbsp;→&nbsp; <b>Place</b></p>
+<p align="center"><b>MuJoCo</b> &nbsp;·&nbsp; <b>Gazebo</b></p>
 
 ---
 
@@ -71,7 +66,7 @@ A classical whole-body controller (WBC) drives the arm and base together in MuJo
 
 Demos are collected from 192 episodes with action noise (145 succeed, 23k transitions). The MuJoCo env resets to its initial state every episode, which the demos and evaluation depend on.
 
-**Gazebo:** `wbc_node` (launch with `wbc_pickplace.launch.py`) drives the Gazebo robot to the cube and closes the gripper, but the grasp does not hold yet. Next steps are contact debugging on the finger pads and RL fine-tuning from the cloned policy.
+**Gazebo:** `wbc_node` (launch with `wbc_pickplace.launch.py`) picks the cube, carries it and releases it at the target. It places the cube on the bin top next to the pick spot, and it landed flat each time. The Gazebo wheels give no traction on this 63 kg robot (odometry drifts while the base stays put), so the node reaches with the arm alone (`fixed_base`) and the launch file moves the cube to x = 0.5, inside arm reach. Driving the base in Gazebo is still open. A scene-only view for recording is in `config/gui_clean.config` (`gz sim -g --gui-config`).
 
 ```bash
 python3 -m pickplace_rl_mobile.compare_wbc_policy --episodes 8

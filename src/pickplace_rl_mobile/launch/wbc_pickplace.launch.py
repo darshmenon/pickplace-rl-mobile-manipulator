@@ -33,7 +33,7 @@ def generate_launch_description():
             'use_sim_time': False,  # /clock is not bridged in gazebo.launch.py
             'use_perception': LaunchConfiguration('use_perception'),
             'fallback_object_pos': [0.5, 0.0, 0.1325],
-            'target_pos': [0.4, 0.3, 0.08],
+            'target_pos': [0.5, 0.14, 0.14],
             'gravity_ff': 0.0,
         }],
     )

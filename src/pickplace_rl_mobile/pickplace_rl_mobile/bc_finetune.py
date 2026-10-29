@@ -114,12 +114,13 @@ def dagger(model, venv, demos, iters, eps, max_steps, bc_steps, eval_seeds, beta
 def fill_buffer(model, venv, demos):
     obs = venv.normalize_obs(demos['obs']).astype(np.float32)
     nxt = venv.normalize_obs(demos['next_obs']).astype(np.float32)
-    for i in range(len(obs)):
-        model.replay_buffer.add(
-            obs[i][None], nxt[i][None], demos['act_exec'][i][None],
-            np.array([demos['rew'][i] * REWARD_SCALE], dtype=np.float32),
-            np.array([demos['done'][i]], dtype=np.float32),
-            [{'TimeLimit.truncated': False}])
+    n = model.replay_buffer.n_envs
+    rew = (np.asarray(demos['rew']) * REWARD_SCALE).astype(np.float32)
+    done = np.asarray(demos['done'], dtype=np.float32)
+    for i in range(0, len(obs) - n + 1, n):  # the buffer stores one transition per env per add
+        sl = slice(i, i + n)
+        model.replay_buffer.add(obs[sl], nxt[sl], demos['act_exec'][sl], rew[sl], done[sl],
+                                [{'TimeLimit.truncated': False}] * n)
 
 
 def evaluate(model, venv, seeds, max_steps=400):
@@ -211,18 +212,21 @@ def main():
     if args.finetune_steps > 0:
         print('stage 2 critic warm-up (actor frozen)', flush=True)
         fill_buffer(model, venv, demos)
-        actor_opt = model.actor.optimizer
-        for g in actor_opt.param_groups:
-            g['lr'] = 0.0
-        model.ent_coef_optimizer and [g.__setitem__('lr', 0.0) for g in model.ent_coef_optimizer.param_groups]
+        # SB3 resets every optimiser lr from its schedule on each train() call, so zeroing the lr
+        # does not freeze the actor. Switch off its gradients for the critic warm-up instead.
+        for p_ in model.actor.parameters():
+            p_.requires_grad_(False)
         model._n_updates = 0
+        from stable_baselines3.common.logger import configure
+        model.set_logger(configure(None, ['stdout']))  # train() logs, and learn() has not set one up yet
         model.policy.set_training_mode(True)
-        model.train(gradient_steps=args.warmup_steps, batch_size=256)
-        for g in actor_opt.param_groups:
-            g['lr'] = 1e-4
-        if model.ent_coef_optimizer:
-            for g in model.ent_coef_optimizer.param_groups:
-                g['lr'] = 1e-4
+        chunk = 1000
+        for done in range(0, args.warmup_steps, chunk):
+            model.train(gradient_steps=min(chunk, args.warmup_steps - done), batch_size=256)
+            print(f'  warm-up {min(done + chunk, args.warmup_steps)}/{args.warmup_steps}', flush=True)
+        for p_ in model.actor.parameters():
+            p_.requires_grad_(True)
+        model.lr_schedule = lambda _: 1e-4  # gentle online fine-tuning, the schedule is what sets the lr
         sr, ph, st = evaluate(model, venv, eval_seeds)
         print(f'after warm-up eval success={sr:.2f} max_phase={ph:.2f}', flush=True)
 

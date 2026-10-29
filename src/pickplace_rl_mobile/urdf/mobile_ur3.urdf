@@ -14,6 +14,13 @@
   <material name="green">
     <color rgba="0.0 0.8 0.0 1.0" />
   </material>
+  <!-- same purple as the MuJoCo chassis -->
+  <material name="purple">
+    <color rgba="0.40 0.23 0.72 1.0" />
+  </material>
+  <material name="purple_dark">
+    <color rgba="0.25 0.14 0.45 1.0" />
+  </material>
   <material name="grey">
     <color rgba="0.5 0.5 0.5 1.0" />
   </material>
@@ -28,14 +35,14 @@
       <geometry>
         <box size="0.45 0.35 0.08" />
       </geometry>
-      <material name="white" />
+      <material name="purple" />
     </visual>
     <visual>
       <origin xyz="0 0 0.095" rpy="0 0 0" />
       <geometry>
         <box size="0.4 0.3 0.01" />
       </geometry>
-      <material name="black" />
+      <material name="purple_dark" />
     </visual>
     <collision>
       <origin xyz="0 0 0.05" rpy="0 0 0" />
@@ -478,10 +485,11 @@
     <visual>
       <origin rpy="0 0 0" xyz="0 0 0" />
       <geometry>
-        <mesh filename="package://robotiq_2f_85_gripper_visualization/meshes/visual/robotiq_arg2f_85_base_link.dae" scale="0.001 0.001 0.001" />
+        <!-- the 2.5 MB .dae does not render in the Gazebo GUI, so use the collision STL -->
+        <mesh filename="package://robotiq_2f_85_gripper_visualization/meshes/collision/robotiq_arg2f_85_base_link.stl" />
       </geometry>
       <material name="gripper_surface">
-        <color rgba="0.1 0.1 0.1 1" />
+        <color rgba="0.22 0.22 0.24 1" />
       </material>
     </visual>
     <collision>
