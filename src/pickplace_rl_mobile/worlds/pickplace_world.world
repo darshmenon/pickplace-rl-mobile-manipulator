@@ -102,9 +102,16 @@
           <surface>
             <friction>
               <ode>
-                <mu>1.5</mu>
-                <mu2>1.5</mu2>
+                <mu>5.0</mu>
+                <mu2>5.0</mu2>
+                <slip1>0.0001</slip1>
+                <slip2>0.0001</slip2>
               </ode>
+              <torsional>
+                <coefficient>0.1</coefficient>
+                <use_patch_radius>false</use_patch_radius>
+                <surface_radius>0.03</surface_radius>
+              </torsional>
             </friction>
             <contact>
               <ode>
