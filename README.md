@@ -3,12 +3,13 @@
 [![ROS2 Humble](https://img.shields.io/badge/ROS2-Humble-blue)](https://docs.ros.org/en/humble/)
 [![Gazebo Harmonic](https://img.shields.io/badge/Gazebo-Harmonic-orange)](https://gazebosim.org/)
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-green)](https://python.org)
+[![MuJoCo](https://img.shields.io/badge/MuJoCo-sim-red)](https://mujoco.org/)
 [![SB3-Contrib TQC](https://img.shields.io/badge/SB3--Contrib-TQC-purple)](https://github.com/Stable-Baselines-Team/stable-baselines3-contrib)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-> **Platform:** ROS2 Humble · Gazebo Harmonic · Ubuntu 22.04 · CUDA
+> **Platform:** ROS2 Humble · Gazebo Harmonic · MuJoCo · Ubuntu 22.04 · CUDA
 
-A mobile manipulator that learns pick-and-place via **RL + a scripted pre-grasp routine** — no demonstrations, no motion planning in the loop. A differential-drive base carries a 6-DOF UR3 arm with a Robotiq 2F-85 gripper. A scripted controller handles base approach and arm pre-positioning; **TQC** (Truncated Quantile Critics) learns the manipulation stages from dense reward shaping.
+A mobile manipulator that learns pick-and-place with **RL + a scripted pre-grasp routine**, plus a classical **whole-body controller (WBC)** used as a baseline and as a demonstrator for imitation. A differential-drive base carries a 6-DOF UR3 arm with a Robotiq 2F-85 gripper. **TQC** (Truncated Quantile Critics) learns the manipulation stages from dense reward shaping in Gazebo/ROS2, and the same robot runs in MuJoCo for fast WBC rollouts, behaviour cloning and DAgger.
 
 ![Robot in MuJoCo](./images/mujoco_robot.png)
 
@@ -40,7 +41,7 @@ A mobile manipulator that learns pick-and-place via **RL + a scripted pre-grasp 
 
 ## Highlights
 
-- **No motion planning** — one TQC policy controls 6 arm joints + gripper + base simultaneously
+- **No motion planning in the RL loop** — one TQC policy controls 6 arm joints + gripper + base simultaneously
 - **Phase-based curriculum** — 5 phases, milestone bonuses (+100 to +1000), retreat penalized 3–4× harsher than approach
 - **Analytical FK** — UR3 DH parameters give EE world position with zero TF latency
 - **Real Gazebo poses** — `ros_gz` dynamic_pose bridge gives ground-truth object position, no fake randomisation
