@@ -10,7 +10,16 @@
 
 A mobile manipulator that learns pick-and-place via **RL + a scripted pre-grasp routine** — no demonstrations, no motion planning in the loop. A differential-drive base carries a 6-DOF UR3 arm with a Robotiq 2F-85 gripper. A scripted controller handles base approach and arm pre-positioning; **TQC** (Truncated Quantile Critics) learns the manipulation stages from dense reward shaping.
 
-![Robot in Gazebo](./images/gazebo_robot.png)
+![Robot in MuJoCo](./images/mujoco_robot.png)
+
+### Pick and place in action
+
+<p align="center">
+  <img src="./images/mujoco_grasp.png" width="32%" alt="Grasp">
+  <img src="./images/mujoco_carry.png" width="32%" alt="Carry">
+  <img src="./images/mujoco_place.png" width="32%" alt="Place">
+</p>
+<p align="center"><b>Grasp</b> &nbsp;→&nbsp; <b>Carry</b> &nbsp;→&nbsp; <b>Place</b></p>
 
 ---
 
@@ -36,6 +45,27 @@ A mobile manipulator that learns pick-and-place via **RL + a scripted pre-grasp 
 - **Grasp verification** — object lift checked against real Gazebo pose for up to 80 steps before confirming success
 - **VecNormalize** — online normalisation of all 46 obs dims + reward, critical for mixed-scale inputs
 - **Caster-aware pregrasp** — front caster (r=6cm, x=+30cm from chassis) kept clear of bin wall as the arm reaches over it
+
+---
+
+## Whole-Body Controller Baseline and Imitation Warm Start
+
+A classical whole-body controller (WBC) drives the arm and base together in MuJoCo and serves as both a baseline and a demonstrator for the policy.
+
+| Component | File | Role |
+|-----------|------|------|
+| WBC baseline | `wbc_baseline.py` | Damped least-squares over 6 arm joints + base (9 DoF), top-down grasp, pinch end-effector |
+| Comparison | `compare_wbc_policy.py` | Same seeds and metrics for WBC and trained policies |
+| Demo collection | `collect_demos.py` | Parallel WBC rollouts with action noise, keeps successful episodes only |
+| BC and DAgger | `bc_finetune.py` | Clone the WBC into a TQC actor, DAgger relabelling, optional TQC fine-tune |
+
+**Status:** the WBC succeeds on 8/8 evaluation seeds (100-107). The cloned policy is still weak (about 2/8 after DAgger), so RL fine-tuning from the cloned start is the next step.
+
+```bash
+python3 -m pickplace_rl_mobile.compare_wbc_policy --episodes 8
+python3 -m pickplace_rl_mobile.collect_demos --episodes 160 --workers 16
+python3 -m pickplace_rl_mobile.bc_finetune --demos demos/wbc_pinch.npz --dagger-iters 8
+```
 
 ---
 
