@@ -62,11 +62,13 @@ def _skew(v):
 class WholeBodyController:
     def __init__(self, env: PickPlaceEnvMuJoCo, ee_site='pinch',
                  base_weight=2.0, arm_weight=0.02, damping=1e-3,
-                 q_nom=None, use_external=False, grav_ff=_GRAV_FF):
+                 q_nom=None, use_external=False, grav_ff=_GRAV_FF, grasp_tol=0.02, descend_tol=0.012):
         # use_external=False sends everything through the normalised 9-D action,
         # so recorded demos are exactly reproducible by a policy
         self.env = env
         self.use_external = use_external
+        self.descend_tol = descend_tol  # xy error that releases the final descent
+        self.grasp_tol = grasp_tol  # pinch-to-cube distance at which the gripper closes
         self.grav_ff = grav_ff  # 0 on a real/Gazebo arm whose controller holds its own gravity
         self.model, self.data = env.model, env.data
         self.ee_site = ee_site
@@ -161,7 +163,7 @@ class WholeBodyController:
             if self.stage == 'advance':
                 xy_err = np.linalg.norm((tgt - ee)[:2])
                 # latch the descent once XY is within finger clearance (hysteresis)
-                self._descend = xy_err < 0.012 or (self._descend and xy_err < 0.03)
+                self._descend = xy_err < self.descend_tol or (self._descend and xy_err < 2.5 * self.descend_tol)
                 if not self._descend:
                     tgt[2] = ee[2]
             if self.stage == 'hover':
@@ -169,7 +171,7 @@ class WholeBodyController:
                 if np.linalg.norm(tgt - ee) < 0.04:
                     self.stage = 'advance'
             if self.stage == 'advance':
-                if err_now < 0.02 and self._descend:
+                if err_now < self.grasp_tol and self._descend:
                     self.hold += 1
                     grip = 1.0
                 elif self.hold > 0:
