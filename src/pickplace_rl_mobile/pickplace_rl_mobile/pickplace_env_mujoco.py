@@ -133,9 +133,16 @@ class PickPlaceEnvMuJoCo(PickPlaceEnvBase):
         enable_assist=True,
         render=False,
         whole_body=False,
+        ee_site='flange',
     ):
+        if ee_site not in ('flange', 'pinch'):
+            raise ValueError("ee_site must be 'flange' or 'pinch'")
+        self.ee_site = ee_site
         self.model = _build_model()
         self.data = mujoco.MjData(self.model)
+        # Scratch MjData for FK at arbitrary joint angles (assist Jacobian).
+        self._fk_data = mujoco.MjData(self.model)
+        self._pinch_site_id = self.model.site('gripper_pinch').id
 
         self._arm_qpos_adr = np.array(
             [self.model.joint(name).qposadr[0] for name in _ARM_JOINT_NAMES])
@@ -176,6 +183,13 @@ class PickPlaceEnvMuJoCo(PickPlaceEnvBase):
             enable_assist=enable_assist,
             whole_body=whole_body,
         )
+        if ee_site == 'pinch':
+            # the cube stops the fingers at ~0.22, so a real grasp never reaches
+            # the base-class "closed" threshold of 0.7
+            self._grip_closing, self._grip_closed, self._grip_hold_min = 0.08, 0.15, 0.10
+            # full arm authority from the start so a demonstrator's joint
+            # velocities map 1:1 onto the policy action in every phase
+            self._phase_arm_gain = {1: 1.0, 2: 1.0}
         self._pull_state()
 
     # ------------------------------------------------------------------
@@ -193,6 +207,32 @@ class PickPlaceEnvMuJoCo(PickPlaceEnvBase):
         self.base_pose = np.array([bx, by, float(np.arctan2(np.sin(byaw), np.cos(byaw)))])
         self.real_object_pos = d.xpos[self._object_body_id].copy()
         self._joint_states_received = True
+
+    # ------------------------------------------------------------------
+    # End-effector point. The base class uses the UR3 flange (DH FK). With
+    # ee_site='pinch' the controlled point is the Robotiq pinch site instead,
+    # 15.6 cm further along the tool axis: that is where the cube has to be for
+    # a physical grasp, so the reward/phase gates then agree with the contact
+    # physics. 'flange' keeps the original behaviour for old checkpoints.
+    # ------------------------------------------------------------------
+
+    def _ee_world_from_joints(self, joint_angles):
+        if self.ee_site == 'flange':
+            return super()._ee_world_from_joints(joint_angles)
+        fk = self._fk_data
+        fk.qpos[:] = self.data.qpos
+        fk.qpos[self._arm_qpos_adr] = np.asarray(joint_angles[:6], dtype=float)
+        mujoco.mj_kinematics(self.model, fk)
+        return fk.site_xpos[self._pinch_site_id].copy()
+
+    def get_end_effector_pos(self):
+        if self.ee_site == 'flange':
+            return super().get_end_effector_pos()
+        world = self._ee_world_from_joints(self.joint_positions[:6])
+        bx, by, btheta = self.base_pose
+        dx, dy = world[0] - bx, world[1] - by
+        c, s = np.cos(btheta), np.sin(btheta)
+        return np.array([c * dx + s * dy, -s * dx + c * dy, world[2] - _BASE_SPAWN_Z])
 
     # ------------------------------------------------------------------
     # Backend hooks (see PickPlaceEnvBase)

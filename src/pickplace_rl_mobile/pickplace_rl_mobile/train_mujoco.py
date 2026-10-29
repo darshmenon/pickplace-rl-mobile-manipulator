@@ -35,9 +35,10 @@ _ADVANCE_THRESHOLDS = {1: 25.0, 2: 120.0, 3: 350.0, 4: 600.0}
 _REVERT_THRESHOLDS = {2: 60.0, 3: 200.0, 4: 450.0, 5: 700.0}
 
 
-def _make_env(whole_body, assist, curriculum_stage):
+def _make_env(whole_body, assist, curriculum_stage, ee_site='flange'):
     return lambda: PickPlaceEnvMuJoCo(
-        enable_assist=assist, whole_body=whole_body, curriculum_stage=curriculum_stage)
+        enable_assist=assist, whole_body=whole_body, curriculum_stage=curriculum_stage,
+        ee_site=ee_site)
 
 
 class CurriculumCallback(BaseCallback):
@@ -103,10 +104,10 @@ def _build_model(algo, venv, device):
                policy_kwargs=dict(net_arch=[512, 512, 512]))
 
 
-def evaluate(model, venv, curriculum_stage=0, steps=150):
+def evaluate(model, venv, curriculum_stage=0, steps=150, ee_site='flange'):
     """Roll out one deterministic episode with assist off; return base travel."""
     env = PickPlaceEnvMuJoCo(enable_assist=False, whole_body=venv.get_attr('whole_body')[0],
-                              curriculum_stage=curriculum_stage)
+                              curriculum_stage=curriculum_stage, ee_site=ee_site)
     obs, _ = env.reset(seed=0)
     path, total = [env.base_pose[:2].copy()], 0.0
     for _ in range(steps):
@@ -128,6 +129,8 @@ def main():
     p.add_argument('--timesteps', type=int, default=200_000)
     p.add_argument('--whole-body', action='store_true')
     p.add_argument('--no-assist', action='store_true')
+    p.add_argument('--ee-site', choices=['flange', 'pinch'], default='flange',
+                    help='controlled end-effector point; pinch matches the physical grasp')
     p.add_argument('--device', default='cpu')
     p.add_argument('--save-dir', default='./rl_models/mujoco')
     p.add_argument('--checkpoint-freq', type=int, default=20_000,
@@ -139,7 +142,7 @@ def main():
                     help='env steps between curriculum-eval rollouts')
     args = p.parse_args()
 
-    venv = make_vec_env(_make_env(args.whole_body, not args.no_assist, args.curriculum_stage),
+    venv = make_vec_env(_make_env(args.whole_body, not args.no_assist, args.curriculum_stage, args.ee_site),
                         n_envs=args.n_envs, vec_env_cls=SubprocVecEnv,
                         vec_env_kwargs=dict(start_method='spawn'))
     venv = VecNormalize(venv, clip_obs=10.0)
@@ -154,7 +157,7 @@ def main():
             save_vecnormalize=True, verbose=1,
         ))
 
-    eval_venv = DummyVecEnv([_make_env(args.whole_body, not args.no_assist, args.curriculum_stage)])
+    eval_venv = DummyVecEnv([_make_env(args.whole_body, not args.no_assist, args.curriculum_stage, args.ee_site)])
     eval_venv = VecNormalize(eval_venv, clip_obs=10.0, training=False, norm_reward=False)
     eval_callback = EvalCallback(
         eval_venv, eval_freq=max(1, args.eval_freq // args.n_envs),
@@ -169,7 +172,7 @@ def main():
     model.save(os.path.join(args.save_dir, f'{args.algo}_model'))
     venv.save(os.path.join(args.save_dir, f'{args.algo}_vecnormalize.pkl'))
 
-    ret, travel, phase = evaluate(model, venv, curriculum_stage=args.curriculum_stage)
+    ret, travel, phase = evaluate(model, venv, curriculum_stage=args.curriculum_stage, ee_site=args.ee_site)
     print(f'eval return={ret:.1f} base_travel={travel:.2f}m phase={phase}')
 
 

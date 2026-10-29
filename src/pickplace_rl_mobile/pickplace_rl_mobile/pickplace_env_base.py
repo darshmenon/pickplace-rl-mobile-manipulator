@@ -108,6 +108,21 @@ class PickPlaceEnvBase(gym.Env):
         self.observation_mode = observation_mode
         self.enable_domain_randomization = bool(enable_domain_randomization)
         self.enable_assist = bool(enable_assist)
+        # Optional joint-velocity override (rad/s, 6-vector) for classical
+        # controllers: bypasses the per-phase attenuation of the RL action so a
+        # planner can drive the joint position controller directly. None = off.
+        self.external_joint_vels = None
+        # Finger-joint thresholds (0=open .. 0.8=fully closed) the reward/phase
+        # logic uses for "closing", "closed on the object" and "still holding".
+        # Defaults assume the fingers close almost fully; a backend whose
+        # fingers stop on the object (MuJoCo 2F-85 on a 6.5 cm cube reads
+        # ~0.22) overrides them.
+        # Fraction of the RL arm command kept in phases 1 and 2 (the rest is
+        # left to the Cartesian assist). 1.0 = full authority, as in the later phases.
+        self._phase_arm_gain = {1: 0.2, 2: 0.5}
+        self._grip_closing = 0.4
+        self._grip_closed = 0.7
+        self._grip_hold_min = 0.3
 
         # Action space: 6 arm joints + 1 gripper + 2 base (linear, angular)
         self.action_space = spaces.Box(
@@ -563,7 +578,7 @@ class PickPlaceEnvBase(gym.Env):
                 reward += 8.0
 
             # Penalise closing gripper during approach — it serves no purpose in phase 1
-            if gripper_pos > 0.5:
+            if gripper_pos > self._grip_closing + 0.1:
                 reward -= 2.0
 
             # Transition once the gripper is close enough for the grasp phase to
@@ -613,7 +628,7 @@ class PickPlaceEnvBase(gym.Env):
                 reward += 12.0
 
             # Reward gripper closing when already near object (actively encourage grasping)
-            if gripper_pos > 0.4 and xy_dist < 0.04 and z_dist < 0.03:
+            if gripper_pos > self._grip_closing and xy_dist < 0.04 and z_dist < 0.03:
                 reward += 8.0 * gripper_pos  # more reward the more closed the gripper
 
             # Penalty for opening gripper when very close (don't retreat from grasp)
@@ -622,14 +637,14 @@ class PickPlaceEnvBase(gym.Env):
 
             # Closing while vertically misaligned tends to smack or skim the cube
             # instead of wrapping it, so make that behavior clearly unattractive.
-            if gripper_pos > 0.5 and z_dist > 0.04:
+            if gripper_pos > self._grip_closing + 0.1 and z_dist > 0.04:
                 reward -= 10.0 * min(z_dist, 0.10)
 
             # A close, closed gripper starts a lift attempt. The large grasp
             # reward is withheld until the object actually rises.
             # Tighter xy/z thresholds ensure the EE is physically at the object
             # surface before claiming a grasp (prevents phantom-grasp cycles).
-            if gripper_pos > 0.7 and xy_dist < 0.05 and z_dist < 0.04:
+            if gripper_pos > self._grip_closed and xy_dist < 0.05 and z_dist < 0.04:
                 self.object_grasped = True
                 self.grasp_verified = False
                 self.current_phase = 3
@@ -637,7 +652,7 @@ class PickPlaceEnvBase(gym.Env):
                 self.prev_distance = None
                 self.grasp_attempts += 1
                 reward += 100.0
-            elif gripper_pos > 0.7 and dist_to_obj >= 0.08:
+            elif gripper_pos > self._grip_closed and dist_to_obj >= 0.08:
                 # Penalty scales with distance: closing far away = much worse than closing nearby
                 reward -= 0.5 + dist_to_obj * 5.0
 
@@ -648,7 +663,7 @@ class PickPlaceEnvBase(gym.Env):
 
         elif self.current_phase == 3:
             # Penalise opening gripper while lifting — object will fall
-            if gripper_pos < 0.3:
+            if gripper_pos < self._grip_hold_min:
                 reward -= 20.0
             # EE should be rising; penalise staying at or below grasp height.
             # Raised threshold to 0.16m (just above grasp z of ~0.13m) so the
@@ -679,7 +694,7 @@ class PickPlaceEnvBase(gym.Env):
             else:
                 # Fallback when the pose feed isn't delivering data:
                 # if EE is high and gripper closed, assume object was carried up.
-                if ee_global[2] >= 0.18 and gripper_pos > 0.65:
+                if ee_global[2] >= 0.18 and gripper_pos > self._grip_closed - 0.05:
                     if not self.grasp_verified:
                         self.grasp_verified = True
                         self.verified_grasps += 1
@@ -707,7 +722,7 @@ class PickPlaceEnvBase(gym.Env):
 
         elif self.current_phase == 4:
             # Penalise opening gripper during transport — object will fall
-            if gripper_pos < 0.3:
+            if gripper_pos < self._grip_hold_min:
                 reward -= 20.0
             # EE should stay elevated during transport
             if ee_global[2] < 0.12:
@@ -752,11 +767,11 @@ class PickPlaceEnvBase(gym.Env):
                 reward += 12.0  # dual-align bonus
 
             # Reward opening gripper only when correctly positioned
-            if gripper_pos < 0.3 and dist < 0.10:
+            if gripper_pos < self._grip_hold_min and dist < 0.10:
                 reward += 10.0 * (1.0 - gripper_pos / 0.3)
 
             # Penalise dropping early (opening while still far from target)
-            if gripper_pos < 0.3 and dist > 0.15:
+            if gripper_pos < self._grip_hold_min and dist > 0.15:
                 reward -= 15.0
 
             if dist < 0.08 and gripper_pos < 0.1:
@@ -809,13 +824,16 @@ class PickPlaceEnvBase(gym.Env):
         # becomes self-sufficient as training matures.
         assist_scale = max(0.0, 1.0 - self._global_steps / _ANNEAL_STEPS) if self.enable_assist else 0.0
         if self.current_phase == 1:
-            joint_vels = np.clip(assist_scale * approach_assist + 0.2 * joint_vels, -0.75, 0.75)
+            joint_vels = np.clip(assist_scale * approach_assist + self._phase_arm_gain[1] * joint_vels, -0.75, 0.75)
         elif self.current_phase == 2:
-            joint_vels = np.clip(assist_scale * approach_assist + 0.5 * joint_vels, -0.75, 0.75)
+            joint_vels = np.clip(assist_scale * approach_assist + self._phase_arm_gain[2] * joint_vels, -0.75, 0.75)
         if self.current_phase in [1, 2]:
             # Wrist roll does not move the EE position; old checkpoints sometimes
             # spin it continuously, which destabilizes training and wastes episodes.
             joint_vels[5] = np.clip(-0.5 * self.joint_positions[5], -0.5, 0.5)
+
+        if self.external_joint_vels is not None:
+            joint_vels = np.clip(np.asarray(self.external_joint_vels, dtype=np.float64), -1.0, 1.0)
 
         gripper_command = -1.0 if self.current_phase == 1 else action[6]
         gripper_target = 0.8 if gripper_command > 0 else 0.0
