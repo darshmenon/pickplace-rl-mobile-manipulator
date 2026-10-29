@@ -44,8 +44,11 @@ class WbcNode(Node):
         self.declare_parameter('target_pos', [0.6, 0.5, 0.15])
         self.declare_parameter('fallback_object_pos', [0.6, 0.0, 0.1325])
         self.declare_parameter('use_perception', True)
+        # Gazebo's wheels have no traction on this robot (odom drifts while the base stays put),
+        # so reach with the arm alone and pin the shadow base at the origin
+        self.declare_parameter('fixed_base', True)
         self.declare_parameter('gravity_ff', 0.0)        # Gazebo holds the arm itself
-        self.declare_parameter('grasp_finger_pos', 0.25)  # finger_joint reading at or above this = closed on the cube
+        self.declare_parameter('grasp_finger_pos', 0.12)  # finger_joint reading at or above this = closed on the cube
         self.declare_parameter('grasp_finger_max', 0.70)  # above this the fingers closed on nothing
         self.declare_parameter('grasp_hold_ticks', 3)
         # distance from gripper_base to the midpoint of the Gazebo finger pads, measured from tf
@@ -62,6 +65,7 @@ class WbcNode(Node):
         self.target = np.array(self.get_parameter('target_pos').value, dtype=float)
         self.object_pos = np.array(self.get_parameter('fallback_object_pos').value, dtype=float)
         self.use_perception = bool(self.get_parameter('use_perception').value)
+        self.fixed_base = bool(self.get_parameter('fixed_base').value)
         self.grasp_finger = float(self.get_parameter('grasp_finger_pos').value)
         self.grasp_finger_max = float(self.get_parameter('grasp_finger_max').value)
         self.hold_ticks = int(self.get_parameter('grasp_hold_ticks').value)
@@ -75,6 +79,7 @@ class WbcNode(Node):
         self.ctrl = WholeBodyController(
             self.env, ee_site='pinch',
             grav_ff=float(self.get_parameter('gravity_ff').value),
+            base_weight=1e4 if self.fixed_base else 2.0,
             grasp_tol=float(self.get_parameter('grasp_tol').value),
             descend_tol=float(self.get_parameter('descend_tol').value))
         self.env.target_pos = self.target.astype(np.float32)
@@ -132,8 +137,9 @@ class WbcNode(Node):
         env, d = self.env, self.env.data
         d.qpos[env._arm_qpos_adr] = self.q
         d.qpos[env._gripper_qpos_adr] = self.finger
-        d.qpos[env._base_x_qpos], d.qpos[env._base_y_qpos] = self.base[:2]
-        d.qpos[env._base_yaw_qpos] = self.base[2]
+        base = np.zeros(3) if self.fixed_base else self.base
+        d.qpos[env._base_x_qpos], d.qpos[env._base_y_qpos] = base[:2]
+        d.qpos[env._base_yaw_qpos] = base[2]
         a = env._object_qpos_adr
         d.qpos[a:a + 3] = self.object_pos
         d.qpos[a + 3:a + 7] = [1, 0, 0, 0]
@@ -203,6 +209,8 @@ class WbcNode(Node):
             a[5] = float(np.clip(np.clip(1.5 * err, -_ARM_MAX_VEL, _ARM_MAX_VEL) / _ACTION_TO_VEL, -1, 1))
         else:
             a[5] = 0.0
+        if self.fixed_base:
+            a[7:] = 0.0
         if self.phase in (1, 2) and self.ctrl.hold > 0:
             # the real arm lags its commands: hold still while the fingers close
             a[:6] = 0.0
