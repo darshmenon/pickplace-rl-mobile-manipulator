@@ -165,6 +165,10 @@ def main():
     p.add_argument('--save-dir', default='rl_models/mujoco_bc')
     p.add_argument('--bc-steps', type=int, default=8000)
     p.add_argument('--warmup-steps', type=int, default=3000)
+    p.add_argument('--stats-demos', default=None,
+                   help='demos whose statistics fix the obs normalisation (use the original set when resuming)')
+    p.add_argument('--init-model', default=None, help='resume from this TQC zip (skips plain BC)')
+    p.add_argument('--dagger-beta', type=float, default=0.5)
     p.add_argument('--dagger-iters', type=int, default=0)
     p.add_argument('--dagger-eps', type=int, default=16)
     p.add_argument('--dagger-max-steps', type=int, default=400)
@@ -183,10 +187,14 @@ def main():
                                      vec_env_cls=SubprocVecEnv,
                                      vec_env_kwargs=dict(start_method='spawn')),
                         norm_obs=True, norm_reward=False, clip_obs=10.0)
-    model = build_model(venv, demos)
+    model = build_model(venv, load_demos(args.stats_demos) if args.stats_demos else demos)
 
-    print('stage 1 behavior cloning', flush=True)
-    behavior_clone(model, venv, demos, args.bc_steps)
+    if args.init_model:
+        model.set_parameters(args.init_model)
+        print(f'resumed from {args.init_model}', flush=True)
+    else:
+        print('stage 1 behavior cloning', flush=True)
+        behavior_clone(model, venv, demos, args.bc_steps)
     sr, ph, st = evaluate(model, venv, eval_seeds)
     print(f'BC policy eval success={sr:.2f} max_phase={ph:.2f} steps={st:.0f}', flush=True)
     model.save(os.path.join(args.save_dir, 'tqc_bc'))
@@ -195,7 +203,8 @@ def main():
     if args.dagger_iters > 0:
         print('stage 1b DAgger', flush=True)
         demos = dagger(model, venv, demos, args.dagger_iters, args.dagger_eps,
-                       args.dagger_max_steps, args.bc_steps // 2, eval_seeds)
+                       args.dagger_max_steps, args.bc_steps // 2, eval_seeds,
+                       beta0=args.dagger_beta)
         model.save(os.path.join(args.save_dir, 'tqc_dagger'))
         np.savez_compressed(os.path.join(args.save_dir, 'demos_dagger.npz'), **demos)
 
