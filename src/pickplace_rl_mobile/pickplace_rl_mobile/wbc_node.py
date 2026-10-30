@@ -24,6 +24,7 @@ from nav_msgs.msg import Odometry
 from rclpy.action import ActionClient
 from rclpy.node import Node
 from sensor_msgs.msg import JointState
+from tf2_msgs.msg import TFMessage
 from std_msgs.msg import String
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 
@@ -46,7 +47,9 @@ class WbcNode(Node):
         self.declare_parameter('use_perception', True)
         # Gazebo's wheels have no traction on this robot (odom drifts while the base stays put),
         # so reach with the arm alone and pin the shadow base at the origin
+        self.declare_parameter('gt_object', False)  # follow the cube's Gazebo pose (the camera bridge is off)
         self.declare_parameter('fixed_base', True)
+        self.declare_parameter('base_start', [0.0, 0.0, 0.0])  # world pose the robot spawned at (odom starts at 0)
         self.declare_parameter('gravity_ff', 0.0)        # Gazebo holds the arm itself
         self.declare_parameter('grasp_finger_pos', 0.12)  # finger_joint reading at or above this = closed on the cube
         self.declare_parameter('grasp_finger_max', 0.70)  # above this the fingers closed on nothing
@@ -86,7 +89,8 @@ class WbcNode(Node):
 
         self.q = np.zeros(6)
         self.finger = 0.0
-        self.base = np.zeros(3)
+        self.base_start = np.array(self.get_parameter('base_start').value, dtype=float)
+        self.base = self.base_start.copy()
         self.have_joints = self.have_odom = False
         self.perception_received = not self.use_perception
         self.safety_ok = True
@@ -99,6 +103,9 @@ class WbcNode(Node):
         if self.use_perception:
             self.create_subscription(PoseStamped, '/perception/detected_object',
                                      self._on_object, 10)
+        if bool(self.get_parameter('gt_object').value):
+            self.create_subscription(TFMessage, '/world/pickplace_world/dynamic_pose/info',
+                                     self._on_world_poses, 10)
         self.create_subscription(String, '/safety/status', self._on_safety, 10)
         self._arm_pub = self.create_publisher(
             JointTrajectory, '/arm_controller/joint_trajectory', 10)
@@ -118,13 +125,28 @@ class WbcNode(Node):
     def _on_odom(self, msg):
         p, o = msg.pose.pose.position, msg.pose.pose.orientation
         yaw = np.arctan2(2 * (o.w * o.z + o.x * o.y), 1 - 2 * (o.y * o.y + o.z * o.z))
-        self.base = np.array([p.x, p.y, yaw])
+        self.base = np.array([p.x, p.y, yaw]) + self.base_start
         self.have_odom = True
 
     def _on_object(self, msg):
         p = msg.pose.position
         self.object_pos = np.array([p.x, p.y, p.z])
         self.perception_received = True
+
+    def _on_world_poses(self, msg):
+        # the bridge drops frame names, so follow the transform nearest the last cube estimate
+        # at cube height (robot links ride higher); stop once the fingers start to close
+        if self.phase >= 3 or self.ctrl.hold > 0:
+            return
+        best, best_d = None, 0.15
+        for t in msg.transforms:
+            v = t.transform.translation
+            p = np.array([v.x, v.y, v.z])
+            d = float(np.linalg.norm(p[:2] - self.object_pos[:2]))
+            if abs(p[2] - 0.1325) < 0.012 and d < best_d:
+                best, best_d = p, d
+        if best is not None:
+            self.object_pos = best
 
     def _on_safety(self, msg):
         try:
