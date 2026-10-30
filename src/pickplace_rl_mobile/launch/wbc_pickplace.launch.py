@@ -22,7 +22,8 @@ def generate_launch_description():
     pkg = get_package_share_directory('pickplace_rl_mobile')
     gazebo = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(os.path.join(pkg, 'launch', 'gazebo.launch.py')),
-        launch_arguments={'headless': LaunchConfiguration('headless')}.items(),
+        launch_arguments={'headless': LaunchConfiguration('headless'), 'spawn_x': '-0.8',
+                          'physics': LaunchConfiguration('physics')}.items(),
     )
     wbc = Node(
         package='pickplace_rl_mobile',
@@ -32,9 +33,13 @@ def generate_launch_description():
         parameters=[{
             'use_sim_time': False,  # /clock is not bridged in gazebo.launch.py
             'use_perception': LaunchConfiguration('use_perception'),
+            'fixed_base': LaunchConfiguration('fixed_base'),
+            'base_start': [-0.8, 0.0, 0.0],
             'fallback_object_pos': [0.5, 0.0, 0.1325],
             'target_pos': [0.5, 0.14, 0.14],
             'gravity_ff': 0.0,
+            'descend_tol': 0.010,
+            'gt_object': True,
         }],
     )
     move_cube = ExecuteProcess(cmd=[
@@ -44,8 +49,10 @@ def generate_launch_description():
     return LaunchDescription([
         DeclareLaunchArgument('headless', default_value='false'),
         DeclareLaunchArgument('use_perception', default_value='false'),
+        DeclareLaunchArgument('fixed_base', default_value='false'),
+        DeclareLaunchArgument('physics', default_value='gz-physics-dartsim-plugin'),
         gazebo,
-        # wait for the robot to spawn and the controllers to come up
         TimerAction(period=15.0, actions=[move_cube]),
+        # wait for the robot to spawn and the controllers to come up
         TimerAction(period=20.0, actions=[wbc]),
     ])

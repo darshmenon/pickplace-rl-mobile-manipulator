@@ -79,7 +79,7 @@ def _make_gz_sim(context):
     headless_value = LaunchConfiguration('headless').perform(context)
 
     pkg_ros_gz_sim = get_package_share_directory('ros_gz_sim')
-    physics_flag = '--physics-engine gz-physics-bullet-featherstone-plugin'
+    physics_flag = f"--physics-engine {LaunchConfiguration('physics').perform(context)}"
     gz_args = (
         f'-s -r -v 1 {physics_flag} {world_path}' if headless_value == 'true'
         else f'-r -v 1 {physics_flag} {world_path}'
@@ -174,7 +174,7 @@ def generate_launch_description():
                     '-topic', '/robot_description',
                     '-name', 'mobile_ur3',
                     '-allow_renaming', 'true',
-                    '-x', '0.0',
+                    '-x', LaunchConfiguration('spawn_x'),
                     '-y', '0.0',
                     '-z', '0.08',
                 ],
@@ -231,6 +231,8 @@ def generate_launch_description():
 
     return LaunchDescription([
         headless_arg,
+        DeclareLaunchArgument('spawn_x', default_value='0.0'),
+        DeclareLaunchArgument('physics', default_value='gz-physics-bullet-featherstone-plugin'),
         world_arg,
         set_gz_resource_path,
         set_gz_control_plugin_path,
