@@ -66,7 +66,7 @@ A classical whole-body controller (WBC) drives the arm and base together in MuJo
 
 Demos are collected from 192 episodes with action noise (145 succeed, 23k transitions). The MuJoCo env resets to its initial state every episode, which the demos and evaluation depend on.
 
-**Gazebo:** `wbc_node` (launch with `wbc_pickplace.launch.py`) picks the cube, carries it and releases it at the target. It places the cube on the bin top next to the pick spot, and it landed flat each time. The Gazebo wheels give no traction on this 63 kg robot (odometry drifts while the base stays put), so the node reaches with the arm alone (`fixed_base`) and the launch file moves the cube to x = 0.5, inside arm reach. Driving the base in Gazebo is still open. A scene-only view for recording is in `config/gui_clean.config` (`gz sim -g --gui-config`).
+**Gazebo:** `wbc_node` (launch with `wbc_pickplace.launch.py`) picks the cube, carries it and releases it at the target. It places the cube on the bin top next to the pick spot, and it landed flat each time. The Gazebo wheels give no traction on this 63 kg robot (odometry drifts while the base stays put), so the node reaches with the arm alone (`fixed_base`) and the launch file moves the cube to x = 0.5, inside arm reach. `drive:=true` drives the base under DART (experimental). A scene-only view for recording is in `config/gui_clean.config` (`gz sim -g --gui-config`).
 
 ```bash
 python3 -m pickplace_rl_mobile.compare_wbc_policy --episodes 8
