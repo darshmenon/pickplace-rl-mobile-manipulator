@@ -32,6 +32,7 @@ from pickplace_rl_mobile.pickplace_env_mujoco import PickPlaceEnvMuJoCo
 from pickplace_rl_mobile.wbc_baseline import (
     WholeBodyController, _ACTION_TO_VEL, _ARM_DT, _ARM_MAX_VEL, _LIFT_Z)
 
+_CMD_LEAD = 0.15  # rad the arm command may run ahead of the measured joints
 _ARM_JOINT_NAMES = [
     'shoulder_pan_joint', 'shoulder_lift_joint', 'elbow_joint',
     'wrist_1_joint', 'wrist_2_joint', 'wrist_3_joint',
@@ -83,11 +84,13 @@ class WbcNode(Node):
             self.env, ee_site='pinch',
             grav_ff=float(self.get_parameter('gravity_ff').value),
             base_weight=1e4 if self.fixed_base else 2.0,
+            lock_base_fine=True,
             grasp_tol=float(self.get_parameter('grasp_tol').value),
             descend_tol=float(self.get_parameter('descend_tol').value))
         self.env.target_pos = self.target.astype(np.float32)
 
         self.q = np.zeros(6)
+        self._last_cmd = None
         self.finger = 0.0
         self.base_start = np.array(self.get_parameter('base_start').value, dtype=float)
         self.base = self.base_start.copy()
@@ -178,7 +181,7 @@ class WbcNode(Node):
         # fingers closed AND the cube between them (closing on air also reads as closed)
         self.get_logger().info(
             f'ph={self.phase} stage={self.ctrl.stage} finger={self.finger:.3f} '
-            f'pinch={np.round(pinch, 3).tolist()} cube={np.round(self.object_pos, 3).tolist()}',
+            f'dq={np.round((self.q if self._last_cmd is None else self._last_cmd) - self.q, 3).tolist()} pinch={np.round(pinch, 3).tolist()} cube={np.round(self.object_pos, 3).tolist()}',
             throttle_duration_sec=1.0)
         # closed with the pads level with the cube (closing high above it also reads as closed)
         rel = self.object_pos - pinch
@@ -247,7 +250,11 @@ class WbcNode(Node):
     def _publish(self, a):
         vel = np.clip(_ACTION_TO_VEL * a[:6], -_ARM_MAX_VEL, _ARM_MAX_VEL)
         pt = JointTrajectoryPoint()
-        pt.positions = [float(x) for x in self.q + vel * _ARM_DT]
+        # the arm sags under gravity and lags its target, so integrate on the last command
+        # (kept within _CMD_LEAD of the measured pose) instead of the measured pose
+        base = self.q if self._last_cmd is None else np.clip(self._last_cmd, self.q - _CMD_LEAD, self.q + _CMD_LEAD)
+        self._last_cmd = base + vel * _ARM_DT
+        pt.positions = [float(x) for x in self._last_cmd]
         ns = int(_ARM_DT * 1e9)
         pt.time_from_start = Duration(sec=ns // 1_000_000_000, nanosec=ns % 1_000_000_000)
         traj = JointTrajectory()

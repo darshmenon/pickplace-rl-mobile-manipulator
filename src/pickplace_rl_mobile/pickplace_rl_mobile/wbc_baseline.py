@@ -61,7 +61,7 @@ def _skew(v):
 
 class WholeBodyController:
     def __init__(self, env: PickPlaceEnvMuJoCo, ee_site='pinch',
-                 base_weight=2.0, arm_weight=0.02, damping=1e-3,
+                 base_weight=2.0, arm_weight=0.02, damping=1e-3, lock_base_fine=False,
                  q_nom=None, use_external=False, grav_ff=_GRAV_FF, grasp_tol=0.02, descend_tol=0.012):
         # use_external=False sends everything through the normalised 9-D action,
         # so recorded demos are exactly reproducible by a policy
@@ -82,6 +82,7 @@ class WholeBodyController:
         # for the EE position and would otherwise drift against each other
         self.W = np.diag([arm_weight] * 6 + [base_weight, 5.0 * base_weight])
         self.damping = damping
+        self.lock_base_fine = lock_base_fine
         self.q_nom = _Q_NOMINAL if q_nom is None else np.asarray(q_nom)
         self._jp = np.zeros((3, self.model.nv))
         self._jr = np.zeros((3, self.model.nv))
@@ -165,10 +166,11 @@ class WholeBodyController:
                 # latch the descent once XY is within finger clearance (hysteresis)
                 self._descend = xy_err < self.descend_tol or (self._descend and xy_err < 2.5 * self.descend_tol)
                 if not self._descend:
-                    tgt[2] = ee[2]
+                    # a real arm sags while XY settles, so pin Z at the hover height
+                    tgt[2] = obj[2] + _GRASP_Z_OFFSET + _HOVER_HEIGHT if self.lock_base_fine else ee[2]
             if self.stage == 'hover':
                 tgt = tgt + np.array([0.0, 0.0, _HOVER_HEIGHT])
-                if np.linalg.norm(tgt - ee) < 0.04:
+                if np.linalg.norm(tgt - ee) < (0.015 if self.lock_base_fine else 0.04):
                     self.stage = 'advance'
             if self.stage == 'advance':
                 if err_now < self.grasp_tol and self._descend:
@@ -200,7 +202,8 @@ class WholeBodyController:
 
         fine = self.stage == 'advance' and phase in (1, 2)
         qd = self._solve(np.clip(pos_err, -0.3, 0.3), axis_des,
-                         gain_p=6.0 if fine else 3.0, posture_gain=0.0 if fine else 0.2)
+                         gain_p=6.0 if fine else 3.0, posture_gain=0.0 if fine else 0.2,
+                         base_locked=fine and self.lock_base_fine and np.linalg.norm(pos_err[:2]) < 0.03)
         if phase in (4, 5):
             # carrying the cube the arm alone runs out of reach (and torque): turn
             # the base toward the goal and drive it in, the arm tracks on top
