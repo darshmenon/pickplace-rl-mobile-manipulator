@@ -91,6 +91,7 @@ class WbcNode(Node):
 
         self.q = np.zeros(6)
         self._last_cmd = None
+        self._cube_slot = self._n_poses = None
         self.finger = 0.0
         self.base_start = np.array(self.get_parameter('base_start').value, dtype=float)
         self.base = self.base_start.copy()
@@ -137,19 +138,23 @@ class WbcNode(Node):
         self.perception_received = True
 
     def _on_world_poses(self, msg):
-        # the bridge drops frame names, so follow the transform nearest the last cube estimate
-        # at cube height (robot links ride higher); stop once the fingers start to close
+        # the bridge drops frame names, so pick the cube's slot in the pose list once, while it
+        # still sits at its start pose, then keep following that slot (the list order is stable)
         if self.phase >= 3 or self.ctrl.hold > 0:
             return
-        best, best_d = None, 0.15
-        for t in msg.transforms:
-            v = t.transform.translation
-            p = np.array([v.x, v.y, v.z])
-            d = float(np.linalg.norm(p[:2] - self.object_pos[:2]))
-            if abs(p[2] - 0.1325) < 0.012 and d < best_d:
-                best, best_d = p, d
-        if best is not None:
-            self.object_pos = best
+        n = len(msg.transforms)
+        if self._cube_slot is None or n != self._n_poses:
+            best, best_d = None, 0.15
+            for k, t in enumerate(msg.transforms):
+                v = t.transform.translation
+                d = float(np.linalg.norm(np.array([v.x, v.y]) - self.object_pos[:2]))
+                if abs(v.z - 0.1325) < 0.012 and d < best_d:
+                    best, best_d = k, d
+            if best is None:
+                return
+            self._cube_slot, self._n_poses = best, n
+        v = msg.transforms[self._cube_slot].transform.translation
+        self.object_pos = np.array([v.x, v.y, v.z])
 
     def _on_safety(self, msg):
         try:

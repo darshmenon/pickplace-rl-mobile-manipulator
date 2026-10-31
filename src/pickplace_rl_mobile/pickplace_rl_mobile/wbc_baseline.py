@@ -203,7 +203,8 @@ class WholeBodyController:
         fine = self.stage == 'advance' and phase in (1, 2)
         qd = self._solve(np.clip(pos_err, -0.3, 0.3), axis_des,
                          gain_p=6.0 if fine else 3.0, posture_gain=0.0 if fine else 0.2,
-                         base_locked=fine and self.lock_base_fine and np.linalg.norm(pos_err[:2]) < 0.03)
+                         base_locked=(fine and self.lock_base_fine and np.linalg.norm(pos_err[:2]) < 0.03
+                                      and np.hypot(ee[0] - bx, ee[1] - by) < 0.45))
         if phase in (4, 5):
             # carrying the cube the arm alone runs out of reach (and torque): turn
             # the base toward the goal and drive it in, the arm tracks on top
