@@ -52,18 +52,18 @@ class WbcNode(Node):
         self.declare_parameter('fixed_base', True)
         self.declare_parameter('base_start', [0.0, 0.0, 0.0])  # world pose the robot spawned at (odom starts at 0)
         self.declare_parameter('gravity_ff', 0.0)        # Gazebo holds the arm itself
-        self.declare_parameter('grasp_finger_pos', 0.12)  # finger_joint reading at or above this = closed on the cube
-        self.declare_parameter('grasp_finger_max', 0.70)  # above this the fingers closed on nothing
+        self.declare_parameter('grasp_finger_pos', 0.45)  # gripper_joint at or above this = closed on the cube (a 65 mm cube stalls it near 0.58)
+        self.declare_parameter('grasp_finger_max', 0.68)  # above this the fingers closed on nothing (the cube stalls them near 0.58)
         self.declare_parameter('grasp_hold_ticks', 3)
         # distance from gripper_base to the midpoint of the Gazebo finger pads, measured from tf
         # against the MuJoCo model (its pinch site sits at 0.145)
-        self.declare_parameter('tcp_offset', 0.131)
+        self.declare_parameter('tcp_offset', 0.20)  # RG2 grasp frame, 1 cm mount + 5 cm bracket + 14 cm
         # Close onto the cube's width, not fully (0.8): over-squeezing makes the cube pop out of
         # the pads (UR3_ROS2_PICK_AND_PLACE: closed * (1 - (width - 0.004) / stroke), stroke 0.085)
         # the open pads clear the cube by ~1 cm a side, so only start down when well centred
         self.declare_parameter('descend_tol', 0.004)
         self.declare_parameter('grasp_tol', 0.008)  # close with the pads within 8 mm of the cube centre
-        self.declare_parameter('grasp_close_target', 0.30)  # pad gap = cube width at ~0.23, so squeeze past it
+        self.declare_parameter('grasp_close_target', 0.80)  # pad faces are 63 mm apart at 0.6, so squeeze past the cube
 
         self.rate = float(self.get_parameter('rate').value)
         self.target = np.array(self.get_parameter('target_pos').value, dtype=float)
@@ -123,7 +123,7 @@ class WbcNode(Node):
         pos = dict(zip(msg.name, msg.position))
         if all(n in pos for n in _ARM_JOINT_NAMES):
             self.q = np.array([pos[n] for n in _ARM_JOINT_NAMES])
-            self.finger = float(pos.get('finger_joint', 0.0))
+            self.finger = float(pos.get('gripper_joint', 0.0))
             self.have_joints = True
 
     def _on_odom(self, msg):

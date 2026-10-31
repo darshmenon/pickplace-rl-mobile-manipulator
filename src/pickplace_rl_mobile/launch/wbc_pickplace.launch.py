@@ -31,6 +31,7 @@ def _setup(context):
         PythonLaunchDescriptionSource(os.path.join(pkg, 'launch', 'gazebo.launch.py')),
         launch_arguments={
             'headless': LaunchConfiguration('headless'),
+            'world': LaunchConfiguration('world'),
             'spawn_x': str(spawn_x),
             'physics': 'gz-physics-dartsim-plugin' if drive else 'gz-physics-bullet-featherstone-plugin',
         }.items(),
@@ -69,5 +70,6 @@ def generate_launch_description():
         DeclareLaunchArgument('headless', default_value='false'),
         DeclareLaunchArgument('use_perception', default_value='false'),
         DeclareLaunchArgument('drive', default_value='false'),
+        DeclareLaunchArgument('world', default_value='pickplace_world.world'),
         OpaqueFunction(function=_setup),
     ])

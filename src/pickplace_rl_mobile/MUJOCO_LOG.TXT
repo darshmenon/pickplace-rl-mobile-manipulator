@@ -1,0 +1,21 @@
+Sat Oct 31 16:44:40 2026
+WARNING: Linesearch objective is not convex
+
+Sat Oct 31 16:54:32 2026
+WARNING: Linesearch objective is not convex
+
+Sat Oct 31 16:54:32 2026
+WARNING: Linesearch objective is not convex
+
+Sat Oct 31 16:54:32 2026
+WARNING: Linesearch objective is not convex
+
+Sat Oct 31 16:54:32 2026
+WARNING: Linesearch objective is not convex
+
+Sat Oct 31 16:54:32 2026
+WARNING: Linesearch objective is not convex
+
+Sat Oct 31 16:54:32 2026
+WARNING: Linesearch objective is not convex
+
