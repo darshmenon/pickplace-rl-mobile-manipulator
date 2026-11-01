@@ -69,6 +69,7 @@ class WbcNode(Node):
         self.target = np.array(self.get_parameter('target_pos').value, dtype=float)
         self.object_pos = np.array(self.get_parameter('fallback_object_pos').value, dtype=float)
         self._start_object_pos = self.object_pos.copy()
+        self._grasp_z = self.object_pos[2]
         self.use_perception = bool(self.get_parameter('use_perception').value)
         self.fixed_base = bool(self.get_parameter('fixed_base').value)
         self.gt_object = bool(self.get_parameter('gt_object').value)
@@ -211,11 +212,16 @@ class WbcNode(Node):
             self.closed_ticks = self.closed_ticks + 1 if (held and self.ctrl.hold > 0) else 0
             if self.closed_ticks >= self.hold_ticks:
                 self.phase = 3
+                self._grasp_z = self.object_pos[2]
                 self.get_logger().info('phase 3: lift')
         elif self.phase == 3:
             if not held:  # dropped it, start over
                 self._restart_pick()
             elif pinch[2] >= _LIFT_Z - 0.03:
+                if self.object_pos[2] < self._grasp_z + 0.04:  # gripper rose, cube stayed behind
+                    self.get_logger().info('cube not lifted, retrying')
+                    self._restart_pick()
+                    return
                 self.phase = 4
                 self.get_logger().info('phase 4: transport')
         elif self.phase == 4:
