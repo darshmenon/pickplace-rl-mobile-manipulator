@@ -15,7 +15,7 @@ A mobile manipulator that learns pick-and-place with **RL + a scripted pre-grasp
 
 <p align="center">
   <img src="./images/mujoco_pick_place.gif" width="49%" alt="Whole-body controller pick and place in MuJoCo">
-  <img src="./images/gazebo_carry.png" width="49%" alt="Whole-body controller carrying the cube in Gazebo">
+  <img src="./images/gazebo_pickplace.gif" width="49%" alt="Whole-body controller picking and placing the cube in Gazebo">
 </p>
 <p align="center"><b>MuJoCo</b> &nbsp;·&nbsp; <b>Gazebo</b></p>
 
