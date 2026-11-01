@@ -52,28 +52,34 @@ class WbcNode(Node):
         self.declare_parameter('fixed_base', True)
         self.declare_parameter('base_start', [0.0, 0.0, 0.0])  # world pose the robot spawned at (odom starts at 0)
         self.declare_parameter('gravity_ff', 0.0)        # Gazebo holds the arm itself
-        self.declare_parameter('grasp_finger_pos', 0.45)  # gripper_joint at or above this = closed on the cube (a 65 mm cube stalls it near 0.58)
+        self.declare_parameter('grasp_finger_pos', 0.50)  # gripper_joint at or above this = closed on the cube (a 65 mm cube stalls it near 0.58)
         self.declare_parameter('grasp_finger_max', 0.68)  # above this the fingers closed on nothing (the cube stalls them near 0.58)
         self.declare_parameter('grasp_hold_ticks', 3)
         # distance from gripper_base to the midpoint of the Gazebo finger pads, measured from tf
         # against the MuJoCo model (its pinch site sits at 0.145)
-        self.declare_parameter('tcp_offset', 0.20)  # RG2 grasp frame, 1 cm mount + 5 cm bracket + 14 cm
+        self.declare_parameter('tcp_offset', 0.21)  # RG2 grasp frame (0.20) plus 1 cm: the linkage overlaps the cube top if the pads sit level with its centre
         # Close onto the cube's width, not fully (0.8): over-squeezing makes the cube pop out of
         # the pads (UR3_ROS2_PICK_AND_PLACE: closed * (1 - (width - 0.004) / stroke), stroke 0.085)
         # the open pads clear the cube by ~1 cm a side, so only start down when well centred
         self.declare_parameter('descend_tol', 0.004)
         self.declare_parameter('grasp_tol', 0.008)  # close with the pads within 8 mm of the cube centre
-        self.declare_parameter('grasp_close_target', 0.80)  # pad faces are 63 mm apart at 0.6, so squeeze past the cube
+        # the RG2 pads swing on an arc, so fully open they hang ~3 cm below the grasp frame and dig into
+        # the bin top. Approach half open: pad faces 79 mm apart, pad centre 12.9 cm out from the body.
+        self.declare_parameter('open_target', 0.4)
+        self.declare_parameter('grasp_close_target', 1.3)  # the joint limit, as in the UR3 repo: contact stops the fingers near 0.58 and the extra error keeps the squeeze on
 
         self.rate = float(self.get_parameter('rate').value)
         self.target = np.array(self.get_parameter('target_pos').value, dtype=float)
         self.object_pos = np.array(self.get_parameter('fallback_object_pos').value, dtype=float)
+        self._start_object_pos = self.object_pos.copy()
         self.use_perception = bool(self.get_parameter('use_perception').value)
         self.fixed_base = bool(self.get_parameter('fixed_base').value)
+        self.gt_object = bool(self.get_parameter('gt_object').value)
         self.grasp_finger = float(self.get_parameter('grasp_finger_pos').value)
         self.grasp_finger_max = float(self.get_parameter('grasp_finger_max').value)
         self.hold_ticks = int(self.get_parameter('grasp_hold_ticks').value)
         self.close_target = float(self.get_parameter('grasp_close_target').value)
+        self.open_target = float(self.get_parameter('open_target').value)
 
         # kinematic shadow of the robot, used only for Jacobians and phase tests
         self.env = PickPlaceEnvMuJoCo(enable_assist=False, whole_body=True,
@@ -178,6 +184,13 @@ class WbcNode(Node):
         env._pull_state()
         env.current_phase = self.phase
 
+    def _restart_pick(self):
+        self.ctrl.reset()
+        self.phase, self.closed_ticks = 1, 0
+        if not self.use_perception and not self.gt_object:
+            # the cube estimate followed the gripper while it held on; it is back on the bin
+            self.object_pos = self._start_object_pos.copy()
+
     def _update_phase(self):
         pinch = self.env.data.site_xpos[self.ctrl.pinch_id]
         if not self.use_perception and self.phase >= 3:
@@ -195,18 +208,17 @@ class WbcNode(Node):
         if self.phase in (1, 2):
             if self.finger >= self.grasp_finger_max:  # closed on air, try again
                 self.get_logger().info('grasp missed, retrying')
-                self.ctrl.reset()
+                self._restart_pick()
                 self.phase, self.closed_ticks = 1, 0
                 return
             self.phase = 2 if self.ctrl.hold > 0 else 1
-            self.closed_ticks = self.closed_ticks + 1 if held else 0
+            self.closed_ticks = self.closed_ticks + 1 if (held and self.ctrl.hold > 0) else 0
             if self.closed_ticks >= self.hold_ticks:
                 self.phase = 3
                 self.get_logger().info('phase 3: lift')
         elif self.phase == 3:
             if not held:  # dropped it, start over
-                self.phase, self.closed_ticks = 1, 0
-                self.ctrl.reset()
+                self._restart_pick()
             elif pinch[2] >= _LIFT_Z - 0.03:
                 self.phase = 4
                 self.get_logger().info('phase 4: transport')
@@ -245,7 +257,7 @@ class WbcNode(Node):
             # the real arm lags its commands: hold still while the fingers close
             a[:6] = 0.0
             a[7:] = 0.0
-        if self.phase == 5 and a[6] < 0 and self.finger < 0.1:
+        if self.phase == 5 and a[6] < 0 and self.finger < self.open_target + 0.05:
             self.done = True
             self._stop()
             self.get_logger().info('place complete')
@@ -270,7 +282,7 @@ class WbcNode(Node):
 
         if self._grp.server_is_ready():
             goal = GripperCommand.Goal()
-            goal.command.position = self.close_target if a[6] > 0 else 0.0
+            goal.command.position = self.close_target if a[6] > 0 else self.open_target
             goal.command.max_effort = 50.0
             self._grp.send_goal_async(goal)
 

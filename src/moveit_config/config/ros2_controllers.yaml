@@ -43,7 +43,7 @@ gripper_controller:
     allow_stalling: false
     stall_timeout: 0.5
     stall_velocity_threshold: 0.001
-    goal_tolerance: 0.5
+    goal_tolerance: 0.8
 # arm_with_gripper_controller:
 #   ros__parameters:
 #     joints:
