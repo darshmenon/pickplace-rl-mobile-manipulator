@@ -24,6 +24,7 @@ from launch_ros.actions import Node
 
 
 def _setup(context):
+    delay = float(os.environ.get('SPAWN_DELAY', '5.0')) - 5.0  # see gazebo.launch.py
     drive = LaunchConfiguration('drive').perform(context).lower() == 'true'
     spawn_x = -0.8 if drive else 0.0
     pkg = get_package_share_directory('pickplace_rl_mobile')
@@ -31,6 +32,7 @@ def _setup(context):
         PythonLaunchDescriptionSource(os.path.join(pkg, 'launch', 'gazebo.launch.py')),
         launch_arguments={
             'headless': LaunchConfiguration('headless'),
+            'world': LaunchConfiguration('world'),
             'spawn_x': str(spawn_x),
             'physics': 'gz-physics-dartsim-plugin' if drive else 'gz-physics-bullet-featherstone-plugin',
         }.items(),
@@ -58,9 +60,9 @@ def _setup(context):
         '--req', 'name: "pickup_object" position {x: 0.5 y: 0 z: 0.1325}'])
     return [
         gazebo,
-        TimerAction(period=15.0, actions=[move_cube]),
+        TimerAction(period=15.0 + delay, actions=[move_cube]),
         # wait for the robot to spawn and the controllers to come up
-        TimerAction(period=20.0, actions=[wbc]),
+        TimerAction(period=20.0 + delay, actions=[wbc]),
     ]
 
 
@@ -69,5 +71,6 @@ def generate_launch_description():
         DeclareLaunchArgument('headless', default_value='false'),
         DeclareLaunchArgument('use_perception', default_value='false'),
         DeclareLaunchArgument('drive', default_value='false'),
+        DeclareLaunchArgument('world', default_value='pickplace_world.world'),
         OpaqueFunction(function=_setup),
     ])

@@ -164,8 +164,10 @@ def generate_launch_description():
 
     # Spawn from /robot_description topic.
     # z=0.08 matches wheel collision radius so wheels rest on ground correctly.
+    # a slow-loading world (rendering sensors) needs the robot spawned later: SPAWN_DELAY=20
+    spawn_delay = float(os.environ.get('SPAWN_DELAY', '5.0'))
     spawn_robot = TimerAction(
-        period=5.0,
+        period=spawn_delay,
         actions=[
             Node(
                 package='ros_gz_sim',
@@ -201,7 +203,7 @@ def generate_launch_description():
     )
 
     spawners = TimerAction(
-        period=8.0,
+        period=spawn_delay + 3.0,
         actions=[jsb_spawner, arm_spawner, gripper_spawner]
     )
 
