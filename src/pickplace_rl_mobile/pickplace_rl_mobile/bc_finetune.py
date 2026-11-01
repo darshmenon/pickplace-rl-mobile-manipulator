@@ -175,6 +175,11 @@ def main():
     p.add_argument('--dagger-max-steps', type=int, default=400)
     p.add_argument('--finetune-steps', type=int, default=0)
     p.add_argument('--n-envs', type=int, default=8)
+    p.add_argument('--bc-weight', type=float, default=0.0,
+                   help='weight of a behaviour-cloning loss added to every actor update during fine-tuning')
+    p.add_argument('--ft-lr', type=float, default=1e-5, help='learning rate for online fine-tuning')
+    p.add_argument('--ft-ent', type=float, default=1e-3,
+                   help='fixed entropy coefficient for online fine-tuning (auto-tuning pulls the cloned actor apart)')
     p.add_argument('--eval-seeds', type=int, default=8)
     p.add_argument('--eval-every', type=int, default=10_000)
     args = p.parse_args()
@@ -226,9 +231,26 @@ def main():
             print(f'  warm-up {min(done + chunk, args.warmup_steps)}/{args.warmup_steps}', flush=True)
         for p_ in model.actor.parameters():
             p_.requires_grad_(True)
-        model.lr_schedule = lambda _: 1e-4  # gentle online fine-tuning, the schedule is what sets the lr
+        model.lr_schedule = lambda _: args.ft_lr  # gentle online fine-tuning, the schedule is what sets the lr
+        import torch as th
+        model.ent_coef_optimizer = None  # train() falls back to the fixed ent_coef_tensor
+        model.ent_coef_tensor = th.tensor(float(args.ft_ent), device=model.device)
         sr, ph, st = evaluate(model, venv, eval_seeds)
         print(f'after warm-up eval success={sr:.2f} max_phase={ph:.2f}', flush=True)
+
+        if args.bc_weight > 0:
+            # anchor the actor to the demonstrations: add a BC gradient to each actor step
+            actor = model.policy.actor
+            demo_obs = torch.as_tensor(venv.normalize_obs(demos['obs']), dtype=torch.float32, device=model.device)
+            demo_act = torch.as_tensor(demos['act_clean'], dtype=torch.float32, device=model.device)
+            sgd_step = actor.optimizer.step
+
+            def step_with_bc(*a, **kw):
+                idx = torch.randint(0, len(demo_obs), (256,), device=model.device)
+                bc = torch.nn.functional.mse_loss(actor(demo_obs[idx], deterministic=True), demo_act[idx])
+                (args.bc_weight * bc).backward()
+                return sgd_step(*a, **kw)
+            actor.optimizer.step = step_with_bc
 
         print('stage 3 online fine-tuning', flush=True)
         model.learn(args.finetune_steps, reset_num_timesteps=True,
