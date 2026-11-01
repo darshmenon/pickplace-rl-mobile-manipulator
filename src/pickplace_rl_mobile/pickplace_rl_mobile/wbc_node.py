@@ -68,8 +68,10 @@ class WbcNode(Node):
         self.rate = float(self.get_parameter('rate').value)
         self.target = np.array(self.get_parameter('target_pos').value, dtype=float)
         self.object_pos = np.array(self.get_parameter('fallback_object_pos').value, dtype=float)
+        self._start_object_pos = self.object_pos.copy()
         self.use_perception = bool(self.get_parameter('use_perception').value)
         self.fixed_base = bool(self.get_parameter('fixed_base').value)
+        self.gt_object = bool(self.get_parameter('gt_object').value)
         self.grasp_finger = float(self.get_parameter('grasp_finger_pos').value)
         self.grasp_finger_max = float(self.get_parameter('grasp_finger_max').value)
         self.hold_ticks = int(self.get_parameter('grasp_hold_ticks').value)
@@ -178,6 +180,13 @@ class WbcNode(Node):
         env._pull_state()
         env.current_phase = self.phase
 
+    def _restart_pick(self):
+        self.ctrl.reset()
+        self.phase, self.closed_ticks = 1, 0
+        if not self.use_perception and not self.gt_object:
+            # the cube estimate followed the gripper while it held on; it is back on the bin
+            self.object_pos = self._start_object_pos.copy()
+
     def _update_phase(self):
         pinch = self.env.data.site_xpos[self.ctrl.pinch_id]
         if not self.use_perception and self.phase >= 3:
@@ -195,18 +204,17 @@ class WbcNode(Node):
         if self.phase in (1, 2):
             if self.finger >= self.grasp_finger_max:  # closed on air, try again
                 self.get_logger().info('grasp missed, retrying')
-                self.ctrl.reset()
+                self._restart_pick()
                 self.phase, self.closed_ticks = 1, 0
                 return
             self.phase = 2 if self.ctrl.hold > 0 else 1
-            self.closed_ticks = self.closed_ticks + 1 if held else 0
+            self.closed_ticks = self.closed_ticks + 1 if (held and self.ctrl.hold > 0) else 0
             if self.closed_ticks >= self.hold_ticks:
                 self.phase = 3
                 self.get_logger().info('phase 3: lift')
         elif self.phase == 3:
             if not held:  # dropped it, start over
-                self.phase, self.closed_ticks = 1, 0
-                self.ctrl.reset()
+                self._restart_pick()
             elif pinch[2] >= _LIFT_Z - 0.03:
                 self.phase = 4
                 self.get_logger().info('phase 4: transport')
