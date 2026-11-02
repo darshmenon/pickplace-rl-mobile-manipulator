@@ -190,7 +190,7 @@ class WbcNode(Node):
 
     def _update_phase(self):
         pinch = self.env.data.site_xpos[self.ctrl.pinch_id]
-        if not self.use_perception and self.phase >= 3:
+        if not (self.use_perception or self.gt_object) and self.phase >= 3:
             # no cube pose feed: once grasped, the cube travels with the gripper
             self.object_pos = pinch.copy()
         # fingers closed AND the cube between them (closing on air also reads as closed)
