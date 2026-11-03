@@ -53,9 +53,9 @@
     <inertial>
       
       <origin xyz="-0.12 0 0.02" rpy="0 0 0" />
-      <mass value="20.0" />
+      <mass value="60.0" />
       
-      <inertia ixx="2.7" ixy="0" ixz="0" iyy="3.3" iyz="0" izz="1.7" />
+      <inertia ixx="8.0" ixy="0" ixz="0" iyy="10.0" iyz="0" izz="5.0" />
     </inertial>
   </link>
   <link name="left_wheel">
@@ -80,8 +80,8 @@
       </geometry>
     </collision>
     <inertial>
-      <mass value="5.0" />
-      <inertia ixx="0.02" ixy="0" ixz="0" iyy="0.02" iyz="0" izz="0.02" />
+      <mass value="0.5" />
+      <inertia ixx="0.01" ixy="0" ixz="0" iyy="0.01" iyz="0" izz="0.01" />
     </inertial>
   </link>
   <link name="right_wheel">
@@ -106,8 +106,8 @@
       </geometry>
     </collision>
     <inertial>
-      <mass value="5.0" />
-      <inertia ixx="0.02" ixy="0" ixz="0" iyy="0.02" iyz="0" izz="0.02" />
+      <mass value="0.5" />
+      <inertia ixx="0.01" ixy="0" ixz="0" iyy="0.01" iyz="0" izz="0.01" />
     </inertial>
   </link>
   <joint name="left_wheel_joint" type="continuous">
@@ -144,10 +144,8 @@
   <joint name="front_caster_joint" type="fixed">
     <parent link="chassis_link" />
     <child link="front_caster" />
-    <origin xyz="0.18 0 -0.018" rpy="0 0 0" />
+    <origin xyz="0.18 0 -0.02" rpy="0 0 0" />
   </joint>
-  <gazebo reference="left_wheel"><mu1>1.0</mu1><mu2>1.0</mu2></gazebo>
-  <gazebo reference="right_wheel"><mu1>1.0</mu1><mu2>1.0</mu2></gazebo>
   <gazebo reference="front_caster">
     <mu1>0.0</mu1>
     <mu2>0.0</mu2>
@@ -176,7 +174,7 @@
   <joint name="rear_caster_joint" type="fixed">
     <parent link="chassis_link" />
     <child link="rear_caster" />
-    <origin xyz="-0.20 0 -0.018" rpy="0 0 0" />
+    <origin xyz="-0.20 0 -0.02" rpy="0 0 0" />
   </joint>
   <gazebo reference="rear_caster">
     <mu1>0.0</mu1>

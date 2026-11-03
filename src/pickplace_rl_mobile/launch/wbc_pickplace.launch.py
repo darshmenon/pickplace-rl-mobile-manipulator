@@ -34,7 +34,7 @@ def _setup(context):
             'headless': LaunchConfiguration('headless'),
             'world': LaunchConfiguration('world'),
             'spawn_x': str(spawn_x),
-            'physics': 'gz-physics-bullet-featherstone-plugin' if drive else 'gz-physics-bullet-featherstone-plugin',
+            'physics': 'gz-physics-dartsim-plugin' if drive else 'gz-physics-bullet-featherstone-plugin',
         }.items(),
     )
     wbc = Node(
