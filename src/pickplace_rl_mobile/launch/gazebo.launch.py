@@ -108,7 +108,7 @@ def generate_launch_description():
     )
 
     pkg_dir = get_pickplace_share_dir()
-    urdf_path = os.path.join(pkg_dir, 'urdf', 'mobile_ur3.urdf')
+    urdf_path = os.path.join(pkg_dir, 'urdf', os.environ.get('MOBILE_UR3_URDF', 'mobile_ur3.urdf'))
     ur_description_share = get_package_share_directory('ur_description')
     robotiq_share = get_package_share_directory('robotiq_2f_85_gripper_visualization')
     harmonic_gz_control_prefix, harmonic_gz_control_lib = resolve_gz_ros2_control_lib_dir()
