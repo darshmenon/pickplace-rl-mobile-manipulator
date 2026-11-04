@@ -89,7 +89,7 @@ Each phase has its own dense reward that only activates when the previous phase 
 
 ```
 Phase 1: Lower EE to grasp height AND approach object XY
-         → transition when dist_z < 4cm AND dist_xy < 6cm
+         → transition when dist_z < 12cm AND dist_xy < 20cm (a wide gate; phase 2 finishes the alignment)
 
 Phase 2: Bring EE to object center (side-grasp of 6cm cube)
          → transition when gripper closed (>0.7) AND EE within 4cm of object
@@ -147,7 +147,7 @@ This breaks the symmetry so the agent strongly prefers staying near the object e
 | 2 | 3D distance to object center | ×100 | ×400 |
 | 3 | Z distance to 25cm lift height | ×100 | ×200 |
 | 4 | XY + base dist + heading error | ×50 | ×50 |
-| 5 | 3D to placement position | ×50 | ×50 |
+| 5 | 3D to placement position | ×100 | ×200 |
 
 ---
 

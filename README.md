@@ -52,7 +52,7 @@ A classical whole-body controller (WBC) drives the arm and base together in MuJo
 
 | Component | File | Role |
 |-----------|------|------|
-| WBC baseline | `wbc_baseline.py` | Damped least-squares over 6 arm joints + base (9 DoF), top-down grasp, pinch end-effector |
+| WBC baseline | `wbc_baseline.py` | Damped least-squares over 6 arm joints + base forward speed and yaw rate (8 velocity variables; the policy's 9-D action adds the gripper), top-down grasp, pinch end-effector |
 | Comparison | `compare_wbc_policy.py` | Same seeds and metrics for WBC and trained policies |
 | Demo collection | `collect_demos.py` | Parallel WBC rollouts with action noise, keeps successful episodes only |
 | BC and DAgger | `bc_finetune.py` | Clone the WBC into a TQC actor, DAgger relabelling, optional TQC fine-tune |
