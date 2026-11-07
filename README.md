@@ -42,6 +42,8 @@ A mobile manipulator that learns pick-and-place with **RL + a scripted pre-grasp
 - **Real Gazebo poses** — `ros_gz` dynamic_pose bridge gives ground-truth object position, no fake randomisation
 - **Grasp verification** — object lift checked against real Gazebo pose for up to 80 steps before confirming success
 - **VecNormalize** — online normalisation of all 46 obs dims + reward, critical for mixed-scale inputs
+- **Residual RL on a frozen clone** — a capped (scale 0.02), penalised residual policy is trained on top of the WBC-cloned actor with its updates held back until the critic has seen the clone's rollouts. Plain online fine-tuning collapsed every time
+- **Ground-truth verification** — Gazebo picks are judged by the real cube pose, not the controller's estimate, which exposed "place complete" logs that never moved the cube
 - **Caster-aware pregrasp** — front caster (r=6cm, x=+30cm from chassis) kept clear of bin wall as the arm reaches over it
 
 ---
@@ -66,9 +68,9 @@ A classical whole-body controller (WBC) drives the arm and base together in MuJo
 
 Demos are collected from 192 episodes with action noise (145 succeed, 23k transitions). The MuJoCo env resets to its initial state every episode, which the demos and evaluation depend on.
 
-Online TQC fine-tuning (plain, BC-anchored, or residual) collapsed the policy in every run, so the cloned policy is the result.
+Plain, BC-anchored and uncapped residual online fine-tuning collapsed the policy in every run. A capped residual (scale 0.02, penalty 5.0, actor frozen for the first 30k steps) held up: on 50 unseen seeds the clone scores 46/50 and the clone with the 75k residual 50/50, while the 80k final model scores 47/50. Training is noisy, so pick the checkpoint on held-out seeds (`--seed-start`).
 
-**Gazebo:** `wbc_node` (launch with `wbc_pickplace.launch.py`) picks the cube, carries it and releases it at the target. It places the cube on the bin top next to the pick spot, and it landed flat each time. The Gazebo wheels give no traction on this 63 kg robot (odometry drifts while the base stays put), so the node reaches with the arm alone (`fixed_base`) and the launch file moves the cube to x = 0.5, inside arm reach. `drive:=true` drives the base under DART (experimental). A scene-only view for recording is in `config/gui_clean.config` (`gz sim -g --gui-config`).
+**Gazebo:** `wbc_node` (launch with `wbc_pickplace.launch.py`) picks the cube, carries it and releases it at the target. It places the cube on the bin top next to the pick spot, and it landed flat each time. The Gazebo wheels give no traction on this 63 kg robot (odometry drifts while the base stays put), so the node reaches with the arm alone (`fixed_base`) and the launch file moves the cube to x = 0.5, inside arm reach. `drive:=true` drives the base up to the cube first, then picks. Wheel traction and grasping conflict under Featherstone (0.5 kg wheels grasp but cannot drive, 15 kg wheels drive but the grasp fails, friction 300 does not help), so the base is pushed by Gazebo's velocity-control plugin (`mobile_ur3_vel.urdf`) and stops within 2 mm of the pick spot, checked against the real base and cube poses. A scene-only view for recording is in `config/gui_clean.config` (`gz sim -g --gui-config`).
 
 ```bash
 python3 -m pickplace_rl_mobile.compare_wbc_policy --episodes 8
