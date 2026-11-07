@@ -221,7 +221,8 @@ def generate_launch_description():
             '/wrist_2_joint/cmd_vel@std_msgs/msg/Float64]gz.msgs.Double',
             '/wrist_3_joint/cmd_vel@std_msgs/msg/Float64]gz.msgs.Double',
             '/finger_joint/cmd_vel@std_msgs/msg/Float64]gz.msgs.Double',
-            # Camera/lidar bridges disabled during RL training — not used by policy
+            # Side camera for visual verification (other camera/lidar bridges stay off during RL training)
+            '/verify_cam@sensor_msgs/msg/Image[gz.msgs.Image',
             # TF
             '/tf@tf2_msgs/msg/TFMessage[gz.msgs.Pose_V',
             '/tf_static@tf2_msgs/msg/TFMessage[gz.msgs.Pose_V',
