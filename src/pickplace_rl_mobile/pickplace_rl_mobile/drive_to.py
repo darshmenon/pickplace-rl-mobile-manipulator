@@ -16,9 +16,9 @@ from rclpy.node import Node
 
 
 class DriveTo(Node):
-    def __init__(self, target, speed, tol):
+    def __init__(self, target, speed, tol, min_speed=0.08):
         super().__init__('drive_to')
-        self.target, self.speed, self.tol = target, speed, tol
+        self.target, self.speed, self.tol, self.min_speed = target, speed, tol, min_speed
         self.x = None
         self.stopped = 0
         self.done = False
@@ -35,7 +35,7 @@ class DriveTo(Node):
         err = self.target - self.x
         cmd = Twist()
         if err > self.tol:
-            cmd.linear.x = min(self.speed, max(0.08, 1.5 * err))
+            cmd.linear.x = min(self.speed, max(self.min_speed, 1.5 * err))
         else:
             self.stopped += 1
             if self.stopped == 1:
@@ -50,9 +50,10 @@ def main():
     p.add_argument('--x', type=float, default=0.78, help='odom x to stop at')
     p.add_argument('--speed', type=float, default=0.3)
     p.add_argument('--tol', type=float, default=0.01)
+    p.add_argument('--min-speed', type=float, default=0.08, help='creep speed near the target')
     args, _ = p.parse_known_args()
     rclpy.init()
-    node = DriveTo(args.x, args.speed, args.tol)
+    node = DriveTo(args.x, args.speed, args.tol, args.min_speed)
     while rclpy.ok() and not node.done:
         rclpy.spin_once(node, timeout_sec=0.1)
     node.destroy_node()

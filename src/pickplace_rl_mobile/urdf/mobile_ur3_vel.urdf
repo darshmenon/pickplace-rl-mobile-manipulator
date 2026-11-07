@@ -80,8 +80,8 @@
       </geometry>
     </collision>
     <inertial>
-      <mass value="15.0" />
-      <inertia ixx="0.05" ixy="0" ixz="0" iyy="0.05" iyz="0" izz="0.05" />
+      <mass value="0.5" />
+      <inertia ixx="0.01" ixy="0" ixz="0" iyy="0.01" iyz="0" izz="0.01" />
     </inertial>
   </link>
   <link name="right_wheel">
@@ -106,8 +106,8 @@
       </geometry>
     </collision>
     <inertial>
-      <mass value="15.0" />
-      <inertia ixx="0.05" ixy="0" ixz="0" iyy="0.05" iyz="0" izz="0.05" />
+      <mass value="0.5" />
+      <inertia ixx="0.01" ixy="0" ixz="0" iyy="0.01" iyz="0" izz="0.01" />
     </inertial>
   </link>
   <joint name="left_wheel_joint" type="continuous">
@@ -144,10 +144,8 @@
   <joint name="front_caster_joint" type="fixed">
     <parent link="chassis_link" />
     <child link="front_caster" />
-    <origin xyz="0.18 0 -0.018" rpy="0 0 0" />
+    <origin xyz="0.18 0 -0.02" rpy="0 0 0" />
   </joint>
-  <gazebo reference="left_wheel"><mu1>1.0</mu1><mu2>1.0</mu2></gazebo>
-  <gazebo reference="right_wheel"><mu1>1.0</mu1><mu2>1.0</mu2></gazebo>
   <gazebo reference="front_caster">
     <mu1>0.0</mu1>
     <mu2>0.0</mu2>
@@ -176,7 +174,7 @@
   <joint name="rear_caster_joint" type="fixed">
     <parent link="chassis_link" />
     <child link="rear_caster" />
-    <origin xyz="-0.20 0 -0.018" rpy="0 0 0" />
+    <origin xyz="-0.20 0 -0.02" rpy="0 0 0" />
   </joint>
   <gazebo reference="rear_caster">
     <mu1>0.0</mu1>
@@ -185,16 +183,15 @@
     <material>Gazebo/Black</material>
   </gazebo>
   <gazebo>
-    <plugin filename="gz-sim-diff-drive-system" name="gz::sim::systems::DiffDrive">
-      <left_joint>left_wheel_joint</left_joint>
-      <right_joint>right_wheel_joint</right_joint>
-      <wheel_separation>0.41</wheel_separation>
-      <wheel_radius>0.0758</wheel_radius>
-      <odom_publish_frequency>50</odom_publish_frequency>
+    <plugin filename="gz-sim-velocity-control-system" name="gz::sim::systems::VelocityControl">
       <topic>/cmd_vel</topic>
+    </plugin>
+    <plugin filename="gz-sim-odometry-publisher-system" name="gz::sim::systems::OdometryPublisher">
+      <odom_frame>odom</odom_frame>
+      <robot_base_frame>chassis_link</robot_base_frame>
       <odom_topic>/odom</odom_topic>
-      <frame_id>odom</frame_id>
-      <child_frame_id>chassis_link</child_frame_id>
+      <odom_publish_frequency>50</odom_publish_frequency>
+      <dimensions>2</dimensions>
     </plugin>
     <plugin filename="gz-sim-joint-state-publisher-system" name="gz::sim::systems::JointStatePublisher">
       <topic>/joint_states</topic>
