@@ -42,5 +42,5 @@ For the RL policy and the safety guard system to work, the robot is equipped wit
 - **Purpose**: Used for obstacle detection by the `safety_guard.py` node (triggering an emergency stop if an obstacle is within 25cm) and for the Nav2 AMCL localization and costmaps.
 
 ### 2.3 Wheel Encoders & Joint States
-- **Odometry**: The `DiffDrive` plugin simulates wheel encoders to produce odometry (`/odom`).
+- **Odometry**: The `DiffDrive` plugin simulates wheel encoders to produce odometry (`/odom`). With `drive:=true` the base uses `mobile_ur3_vel.urdf` instead, where Gazebo's velocity-control plugin moves the model and an odometry publisher reports its world pose (see [gazebo_drive_traction.md](gazebo_drive_traction.md)).
 - **Proprioception**: The `JointStatePublisher` system plugin publishes current positions and velocities of all arm and wheel joints to the `/joint_states` topic, forming the core of the RL agent's observation space.

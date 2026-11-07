@@ -223,6 +223,7 @@ def generate_launch_description():
             '/finger_joint/cmd_vel@std_msgs/msg/Float64]gz.msgs.Double',
             # Side camera for visual verification (other camera/lidar bridges stay off during RL training)
             '/verify_cam@sensor_msgs/msg/Image[gz.msgs.Image',
+            '/scan@sensor_msgs/msg/LaserScan[gz.msgs.LaserScan',  # lidar, for SLAM and Nav2 (needs the sensors system)
             # TF
             '/tf@tf2_msgs/msg/TFMessage[gz.msgs.Pose_V',
             '/tf_static@tf2_msgs/msg/TFMessage[gz.msgs.Pose_V',

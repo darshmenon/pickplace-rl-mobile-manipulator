@@ -15,6 +15,14 @@ from nav_msgs.msg import Odometry
 from rclpy.node import Node
 
 
+def drive_speed(err, speed, tol, min_speed):
+    """Forward speed for the remaining distance: zero inside the tolerance, a proportional
+    approach that never drops below the creep speed, capped at the cruise speed."""
+    if err <= tol:
+        return 0.0
+    return min(speed, max(min_speed, 1.5 * err))
+
+
 class DriveTo(Node):
     def __init__(self, target, speed, tol, min_speed=0.08):
         super().__init__('drive_to')
@@ -35,7 +43,7 @@ class DriveTo(Node):
         err = self.target - self.x
         cmd = Twist()
         if err > self.tol:
-            cmd.linear.x = min(self.speed, max(self.min_speed, 1.5 * err))
+            cmd.linear.x = drive_speed(err, self.speed, self.tol, self.min_speed)
         else:
             self.stopped += 1
             if self.stopped == 1:

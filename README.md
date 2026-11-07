@@ -68,6 +68,13 @@ A classical whole-body controller (WBC) drives the arm and base together in MuJo
 
 Demos are collected from 192 episodes with action noise (145 succeed, 23k transitions). The MuJoCo env resets to its initial state every episode, which the demos and evaluation depend on.
 
+| Fine-tuning run | Eval success |
+|-----------------|--------------|
+| Plain online TQC | 0.88 to 0.00 within a few thousand steps |
+| Residual, scale 0.1, actor accidentally unfrozen | 0.12 at 5k steps, 0.00 after |
+| Residual, scale 0.1, actor frozen for 50k steps | 1.00 while frozen, 0.00 within 5k steps of unfreezing |
+| Residual, scale 0.02, penalty 5.0, frozen for 30k | 1.00 while frozen, then noisy (0.00 to 1.00) |
+
 Plain, BC-anchored and uncapped residual online fine-tuning collapsed the policy in every run. A capped residual (scale 0.02, penalty 5.0, actor frozen for the first 30k steps) held up: on 50 unseen seeds the clone scores 46/50 and the clone with the 75k residual 50/50, while the 80k final model scores 47/50. Training is noisy, so pick the checkpoint on held-out seeds (`--seed-start`).
 
 **Gazebo:** `wbc_node` (launch with `wbc_pickplace.launch.py`) picks the cube, carries it and releases it at the target. It places the cube on the bin top next to the pick spot, and it landed flat each time. The Gazebo wheels give no traction on this 63 kg robot (odometry drifts while the base stays put), so the node reaches with the arm alone (`fixed_base`) and the launch file moves the cube to x = 0.5, inside arm reach. `drive:=true` drives the base up to the cube first, then picks. Wheel traction and grasping conflict under Featherstone (0.5 kg wheels grasp but cannot drive, 15 kg wheels drive but the grasp fails, friction 300 does not help), so the base is pushed by Gazebo's velocity-control plugin (`mobile_ur3_vel.urdf`) and stops within 2 mm of the pick spot, checked against the real base and cube poses. A scene-only view for recording is in `config/gui_clean.config` (`gz sim -g --gui-config`).

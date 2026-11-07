@@ -100,6 +100,7 @@ class EvalSave(BaseCallback):
         sr, ph, st = evaluate(self.model, self.base_actor, self.venv, self.scale, self.seeds)
         print(f'[{self.num_timesteps}] eval success={sr:.2f} max_phase={ph:.2f} steps={st:.0f}', flush=True)
         self.model.save(os.path.join(self.save_dir, 'res_latest'))
+        self.model.save(os.path.join(self.save_dir, f'res_{self.num_timesteps}'))  # pick on held-out seeds later
         if sr >= self.best:
             self.best = sr
             self.model.save(os.path.join(self.save_dir, 'res_best'))
