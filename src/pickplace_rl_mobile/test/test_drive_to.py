@@ -19,3 +19,10 @@ def test_creeps_near_target():
 
 def test_proportional_in_between():
     assert drive_speed(0.1, 0.3, 0.002, 0.02) == pytest.approx(0.15)
+
+
+def test_reverse_only_when_allowed():
+    assert drive_speed(-0.5, 0.3, 0.002, 0.02) == 0.0
+    assert drive_speed(-0.5, 0.3, 0.002, 0.02, allow_reverse=True) == -0.3
+    assert drive_speed(-0.1, 0.3, 0.002, 0.02, allow_reverse=True) == pytest.approx(-0.15)
+    assert drive_speed(-0.001, 0.3, 0.002, 0.02, allow_reverse=True) == 0.0

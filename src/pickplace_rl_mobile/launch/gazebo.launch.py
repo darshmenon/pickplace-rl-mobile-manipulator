@@ -213,6 +213,7 @@ def generate_launch_description():
         arguments=[
             '/cmd_vel@geometry_msgs/msg/Twist]gz.msgs.Twist',
             '/odom@nav_msgs/msg/Odometry[gz.msgs.Odometry',
+            '/clock@rosgraph_msgs/msg/Clock[gz.msgs.Clock',  # simulated time for slam_toolbox and Nav2
             '/joint_states@sensor_msgs/msg/JointState[gz.msgs.Model',
             '/shoulder_pan_joint/cmd_vel@std_msgs/msg/Float64]gz.msgs.Double',
             '/shoulder_lift_joint/cmd_vel@std_msgs/msg/Float64]gz.msgs.Double',
