@@ -85,6 +85,9 @@ class EvalSave(BaseCallback):
         self.best, self._last = -1.0, 0
 
     def _on_training_start(self):
+        self._last = self.num_timesteps  # non-zero when resuming
+        if not self._actor_on and self.num_timesteps >= self.actor_delay:
+            self._actor_on = True
         if not self._actor_on:  # let the critic learn from the clone's rollouts first
             # SB3 resets the learning rate on every update, so skip the optimizer step instead
             self.model.actor.optimizer.step = lambda *a, **k: None
@@ -100,6 +103,7 @@ class EvalSave(BaseCallback):
         sr, ph, st = evaluate(self.model, self.base_actor, self.venv, self.scale, self.seeds)
         print(f'[{self.num_timesteps}] eval success={sr:.2f} max_phase={ph:.2f} steps={st:.0f}', flush=True)
         self.model.save(os.path.join(self.save_dir, 'res_latest'))
+        self.model.save_replay_buffer(os.path.join(self.save_dir, 'res_replay'))  # lets --resume continue after a kill
         self.model.save(os.path.join(self.save_dir, f'res_{self.num_timesteps}'))  # pick on held-out seeds later
         if sr >= self.best:
             self.best = sr
@@ -117,6 +121,7 @@ def main():
     p.add_argument('--scale', type=float, default=0.1, help='residual action scale')
     p.add_argument('--res-penalty', type=float, default=0.0, help='reward cost on the mean squared residual action')
     p.add_argument('--seed-start', type=int, default=1000, help='first evaluation seed')
+    p.add_argument('--resume', action='store_true', help='continue from res_latest and res_replay in --save-dir')
     p.add_argument('--n-envs', type=int, default=3)
     p.add_argument('--eval-every', type=int, default=5_000)
     p.add_argument('--eval-seeds', type=int, default=8)
@@ -142,22 +147,32 @@ def main():
     print(f'clone alone eval success={sr:.2f} max_phase={ph:.2f} steps={st:.0f}', flush=True)
 
     rvenv = ResidualVecEnv(venv, base_actor, args.scale, args.res_penalty)
-    model = TQC('MlpPolicy', rvenv, learning_starts=args.learning_starts, batch_size=256, gradient_steps=1,
-                ent_coef='auto_0.005', learning_rate=args.lr, device='cpu', verbose=0,
-                policy_kwargs=dict(net_arch=[256, 256]))
-    with torch.no_grad():  # start from "no correction": the residual head outputs ~0
-        model.actor.mu.weight.mul_(0.01)
-        model.actor.mu.bias.zero_()
+    latest = os.path.join(args.save_dir, 'res_latest.zip')
+    replay = os.path.join(args.save_dir, 'res_replay.pkl')
+    resuming = args.resume and os.path.exists(latest) and os.path.exists(replay)  # an empty buffer can't train
+    if resuming:
+        model = TQC.load(latest, env=rvenv, device='cpu')
+        model.load_replay_buffer(replay)
+        print(f'resuming at {model.num_timesteps} steps', flush=True)
+    else:
+        model = TQC('MlpPolicy', rvenv, learning_starts=args.learning_starts, batch_size=256, gradient_steps=1,
+                    buffer_size=max(args.steps, 100_000), ent_coef='auto_0.005', learning_rate=args.lr,
+                    device='cpu', verbose=0, policy_kwargs=dict(net_arch=[256, 256]))
+    if not resuming:
+        with torch.no_grad():  # start from "no correction": the residual head outputs ~0
+            model.actor.mu.weight.mul_(0.01)
+            model.actor.mu.bias.zero_()
     if args.residual:
         model.set_parameters(args.residual)
         sr, ph, st = evaluate(model, base_actor, venv, args.scale, seeds)
         print(f'clone + {args.residual} eval success={sr:.2f} max_phase={ph:.2f} steps={st:.0f}', flush=True)
         venv.close()
         return
-    sr, ph, st = evaluate(model, base_actor, venv, args.scale, seeds)
-    print(f'clone + untrained residual eval success={sr:.2f} max_phase={ph:.2f} steps={st:.0f}', flush=True)
+    if not resuming:
+        sr, ph, st = evaluate(model, base_actor, venv, args.scale, seeds)
+        print(f'clone + untrained residual eval success={sr:.2f} max_phase={ph:.2f} steps={st:.0f}', flush=True)
 
-    model.learn(args.steps, callback=EvalSave(base_actor, venv, args.scale, args.save_dir,
+    model.learn(max(args.steps - model.num_timesteps, 0), reset_num_timesteps=False, callback=EvalSave(base_actor, venv, args.scale, args.save_dir,
                                               args.eval_every, seeds, args.actor_delay))
     model.save(os.path.join(args.save_dir, 'res_final'))
 

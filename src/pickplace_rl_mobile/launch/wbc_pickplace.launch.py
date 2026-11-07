@@ -48,7 +48,7 @@ def _setup(context):
         name='wbc_node',
         output='screen',
         parameters=[{
-            'use_sim_time': False,  # /clock is not bridged in gazebo.launch.py
+            'use_sim_time': False,  # wall time keeps the controller steady when the sim runs slow
             'use_perception': LaunchConfiguration('use_perception'),
             'fixed_base': True,
             'base_start': [0.0, 0.0, 0.0],
