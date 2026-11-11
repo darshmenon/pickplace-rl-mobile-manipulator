@@ -50,6 +50,7 @@ def _setup(context):
         parameters=[{
             'use_sim_time': False,  # wall time keeps the controller steady when the sim runs slow
             'use_perception': LaunchConfiguration('use_perception'),
+            'gt_object': LaunchConfiguration('gt_object'),  # real cube pose, so a miss is seen instead of assumed
             'fixed_base': True,
             'base_start': [0.0, 0.0, 0.0],
             'fallback_object_pos': [0.5, 0.0, 0.1325],
@@ -98,6 +99,7 @@ def generate_launch_description():
     return LaunchDescription([
         DeclareLaunchArgument('headless', default_value='false'),
         DeclareLaunchArgument('use_perception', default_value='false'),
+        DeclareLaunchArgument('gt_object', default_value='true'),
         DeclareLaunchArgument('drive', default_value='false'),
         DeclareLaunchArgument('drive_mode', default_value='vel'),  # vel (velocity plugin) or glide (set_pose)
         DeclareLaunchArgument('world', default_value='pickplace_world.world'),
