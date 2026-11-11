@@ -26,7 +26,7 @@ A mobile manipulator that learns pick-and-place with **RL + a scripted pre-grasp
 **Learning**
 - **No motion planning in the RL loop** — one TQC policy controls 6 arm joints, gripper and base together
 - **Phase-based curriculum** — 5 phases, milestone bonuses (+100 to +1000), retreat penalised 3–4× harsher than approach
-- **Residual RL on a frozen clone** — a capped (scale 0.02), penalised residual is trained on top of the WBC-cloned actor, with its updates held back until the critic has seen the clone's rollouts. Plain online fine-tuning collapsed every time
+- **Residual RL on a frozen clone, honestly reported** — a capped, penalised residual on the WBC-cloned actor, resumable and scored on 50 held-out seeds. It did not beat the clone (0.92) in any run, and the README table shows why
 
 **Verification**
 - **Ground-truth checks** — Gazebo picks are judged by the real cube pose, not the controller's estimate, which exposed "place complete" logs that never moved the cube
@@ -103,8 +103,12 @@ Plain, BC-anchored and uncapped residual online fine-tuning collapsed the policy
 | Residual, scale 0.1, actor accidentally unfrozen | 0.12 at 5k steps, 0.00 after |
 | Residual, scale 0.1, actor frozen for 50k steps | 1.00 while frozen, 0.00 within 5k steps of unfreezing |
 | Residual, scale 0.02, penalty 5.0, frozen for 30k | 1.00 while frozen, then noisy (0.00 to 1.00) |
+| Same, frozen for 60k | 0.87 while frozen, 0.00 right after unfreezing, 0.44 held-out at 100k |
+| Same, frozen for 30k, actor lr 1e-5, one actor step per 4 | 0.90 right after unfreezing, then 0.07 to 0.83, 0.48 held-out at 100k |
 
-The capped, penalised residual held up. On 50 unseen seeds the clone scores 46/50 and the clone with the 75k residual 50/50, while the 80k final model scores 47/50. Training is noisy, so pick the checkpoint on held-out seeds (`--seed-start`).
+None of these beat the clone on unseen seeds. On 50 held-out seeds the clone scores 0.92 and the best residual snapshots 0.88 to 0.98. The high scores come from frozen or barely trained actors, so they are seed noise, not learning. The clone stays the best policy and the residual is reported as a negative result.
+
+What the runs show: a longer critic warm-up made the collapse worse, and a slower actor only delayed it. Selecting checkpoints on a few evaluation seeds is misleading, so use at least 50 held-out seeds (`--seed-start`). Ideas not yet tried are a conservative critic and a pull of the residual toward zero.
 
 ---
 

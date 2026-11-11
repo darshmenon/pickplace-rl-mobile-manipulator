@@ -77,8 +77,9 @@ def evaluate(model, base_actor, venv, scale, seeds, max_steps=400):
 
 
 class EvalSave(BaseCallback):
-    def __init__(self, base_actor, venv, scale, save_dir, every, seeds, actor_delay=0):
+    def __init__(self, base_actor, venv, scale, save_dir, every, seeds, actor_delay=0, actor_lr=None, actor_every=1):
         super().__init__()
+        self.actor_lr, self.actor_every, self._n = actor_lr, max(actor_every, 1), 0
         self.actor_delay, self._actor_on = actor_delay, actor_delay <= 0
         self.base_actor, self.venv, self.scale = base_actor, venv, scale
         self.save_dir, self.every, self.seeds = save_dir, every, seeds
@@ -88,14 +89,34 @@ class EvalSave(BaseCallback):
         self._last = self.num_timesteps  # non-zero when resuming
         if not self._actor_on and self.num_timesteps >= self.actor_delay:
             self._actor_on = True
+        if self._actor_on:
+            self._throttle_actor()
         if not self._actor_on:  # let the critic learn from the clone's rollouts first
             # SB3 resets the learning rate on every update, so skip the optimizer step instead
             self.model.actor.optimizer.step = lambda *a, **k: None
 
+    def _throttle_actor(self):
+        """Slow actor updates: its own learning rate (SB3 resets the shared one) and one step per N calls."""
+        opt = self.model.actor.optimizer
+        opt.__dict__.pop('step', None)
+        if self.actor_lr is None and self.actor_every <= 1:
+            return
+        orig = opt.step
+
+        def step(*a, **k):
+            self._n += 1
+            if self._n % self.actor_every:
+                return None
+            if self.actor_lr is not None:
+                for g in opt.param_groups:
+                    g['lr'] = self.actor_lr
+            return orig(*a, **k)
+        opt.step = step
+
     def _on_step(self):
         if not self._actor_on and self.num_timesteps >= self.actor_delay:
             self._actor_on = True
-            self.model.actor.optimizer.__dict__.pop('step', None)
+            self._throttle_actor()
             print(f'[{self.num_timesteps}] actor updates enabled', flush=True)
         if self.num_timesteps - self._last < self.every:
             return True
@@ -105,7 +126,7 @@ class EvalSave(BaseCallback):
         self.model.save(os.path.join(self.save_dir, 'res_latest'))
         self.model.save_replay_buffer(os.path.join(self.save_dir, 'res_replay'))  # lets --resume continue after a kill
         self.model.save(os.path.join(self.save_dir, f'res_{self.num_timesteps}'))  # pick on held-out seeds later
-        if sr >= self.best:
+        if sr > self.best:  # strict, so a tie never overwrites an earlier snapshot
             self.best = sr
             self.model.save(os.path.join(self.save_dir, 'res_best'))
         return True
@@ -129,6 +150,8 @@ def main():
     p.add_argument('--learning-starts', type=int, default=2_000)
     p.add_argument('--actor-delay', type=int, default=0,
                    help='steps to keep the residual actor frozen while the critic warms up')
+    p.add_argument('--actor-lr', type=float, default=None, help='separate (lower) learning rate for the actor')
+    p.add_argument('--actor-every', type=int, default=1, help='update the actor once per N gradient steps')
     p.add_argument('--residual', default=None,
                    help='saved residual model to score against the clone on the same seeds, then exit')
     args = p.parse_args()
@@ -173,7 +196,7 @@ def main():
         print(f'clone + untrained residual eval success={sr:.2f} max_phase={ph:.2f} steps={st:.0f}', flush=True)
 
     model.learn(max(args.steps - model.num_timesteps, 0), reset_num_timesteps=False, callback=EvalSave(base_actor, venv, args.scale, args.save_dir,
-                                              args.eval_every, seeds, args.actor_delay))
+                                              args.eval_every, seeds, args.actor_delay, args.actor_lr, args.actor_every))
     model.save(os.path.join(args.save_dir, 'res_final'))
 
 
