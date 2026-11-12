@@ -72,7 +72,7 @@ def behavior_clone(model, venv, demos, steps=8000, batch=512, lr=1e-3):
             print(f'  BC step {i} loss {loss.item():.5f}', flush=True)
 
 
-def dagger(model, venv, demos, iters, eps, max_steps, bc_steps, eval_seeds, beta0=0.5):
+def dagger(model, venv, demos, iters, eps, max_steps, bc_steps, eval_seeds, beta0=0.5, seed_start=5000, lr=1e-3, save_dir=None):
     """Roll out the learner, let the whole-body controller label every visited
     state, aggregate, and retrain. Fixes the drift that plain BC suffers from."""
     from pickplace_rl_mobile.wbc_baseline import WholeBodyController
@@ -87,7 +87,7 @@ def dagger(model, venv, demos, iters, eps, max_steps, bc_steps, eval_seeds, beta
         new = {k: [] for k in keys}
         wins = 0
         for e in range(eps):
-            seed = 5000 + it * eps + e
+            seed = seed_start + it * eps + e
             obs, _ = env.reset(seed=seed)
             ctrl.reset()
             for _ in range(max_steps):
@@ -103,8 +103,10 @@ def dagger(model, venv, demos, iters, eps, max_steps, bc_steps, eval_seeds, beta
             wins += bool(info.get('is_success'))
         for k in keys:
             demos[k] = np.concatenate([demos[k], np.asarray(new[k], dtype=np.float32)])
-        behavior_clone(model, venv, demos, bc_steps)
+        behavior_clone(model, venv, demos, bc_steps, lr=lr)
         sr, ph, st = evaluate(model, venv, eval_seeds)
+        if save_dir:  # later iterations can drift, so keep every one to pick on held-out seeds
+            model.save(os.path.join(save_dir, f'tqc_dagger_{it}'))
         print(f'DAgger iter {it} beta={beta:.2f} mixed-rollout wins={wins}/{eps} '
               f'data={len(demos["obs"])} -> policy eval success={sr:.2f} '
               f'max_phase={ph:.2f} steps={st:.0f}', flush=True)
@@ -172,6 +174,9 @@ def main():
     p.add_argument('--dagger-beta', type=float, default=0.5)
     p.add_argument('--dagger-iters', type=int, default=0)
     p.add_argument('--dagger-eps', type=int, default=16)
+    p.add_argument('--dagger-seed-start', type=int, default=5000,
+                   help='first rollout seed (keep clear of the benchmark seeds 5000-5199)')
+    p.add_argument('--dagger-lr', type=float, default=1e-3, help='BC learning rate for each DAgger retrain')
     p.add_argument('--dagger-max-steps', type=int, default=400)
     p.add_argument('--finetune-steps', type=int, default=0)
     p.add_argument('--n-envs', type=int, default=8)
@@ -210,7 +215,7 @@ def main():
         print('stage 1b DAgger', flush=True)
         demos = dagger(model, venv, demos, args.dagger_iters, args.dagger_eps,
                        args.dagger_max_steps, args.bc_steps // 2, eval_seeds,
-                       beta0=args.dagger_beta)
+                       beta0=args.dagger_beta, seed_start=args.dagger_seed_start, lr=args.dagger_lr, save_dir=args.save_dir)
         model.save(os.path.join(args.save_dir, 'tqc_dagger'))
         np.savez_compressed(os.path.join(args.save_dir, 'demos_dagger.npz'), **demos)
 
