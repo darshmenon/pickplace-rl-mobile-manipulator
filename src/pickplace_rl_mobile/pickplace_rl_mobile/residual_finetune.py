@@ -77,8 +77,10 @@ def evaluate(model, base_actor, venv, scale, seeds, max_steps=400):
 
 
 class EvalSave(BaseCallback):
-    def __init__(self, base_actor, venv, scale, save_dir, every, seeds, actor_delay=0, actor_lr=None, actor_every=1):
+    def __init__(self, base_actor, venv, scale, save_dir, every, seeds, actor_delay=0, actor_lr=None, actor_every=1,
+                 clone_sr=None):
         super().__init__()
+        self.clone_sr = clone_sr  # clone success on the same seeds, so every eval line shows the gap
         self.actor_lr, self.actor_every, self._n = actor_lr, max(actor_every, 1), 0
         self.actor_delay, self._actor_on = actor_delay, actor_delay <= 0
         self.base_actor, self.venv, self.scale = base_actor, venv, scale
@@ -122,7 +124,11 @@ class EvalSave(BaseCallback):
             return True
         self._last = self.num_timesteps
         sr, ph, st = evaluate(self.model, self.base_actor, self.venv, self.scale, self.seeds)
-        print(f'[{self.num_timesteps}] eval success={sr:.2f} max_phase={ph:.2f} steps={st:.0f}', flush=True)
+        gap = '' if self.clone_sr is None else f' gap_vs_clone={sr - self.clone_sr:+.2f}'
+        print(f'[{self.num_timesteps}] eval success={sr:.2f} max_phase={ph:.2f} steps={st:.0f}{gap}', flush=True)
+        if self.clone_sr is not None and sr < self.clone_sr - 0.15:
+            print(f'[{self.num_timesteps}] WARNING residual is {self.clone_sr - sr:.2f} below the clone, '
+                  'possible collapse', flush=True)
         self.model.save(os.path.join(self.save_dir, 'res_latest'))
         self.model.save_replay_buffer(os.path.join(self.save_dir, 'res_replay'))  # lets --resume continue after a kill
         self.model.save(os.path.join(self.save_dir, f'res_{self.num_timesteps}'))  # pick on held-out seeds later
@@ -145,7 +151,7 @@ def main():
     p.add_argument('--resume', action='store_true', help='continue from res_latest and res_replay in --save-dir')
     p.add_argument('--n-envs', type=int, default=3)
     p.add_argument('--eval-every', type=int, default=5_000)
-    p.add_argument('--eval-seeds', type=int, default=8)
+    p.add_argument('--eval-seeds', type=int, default=50, help='seeds per eval; 50 keeps seed luck out of checkpoint selection')
     p.add_argument('--lr', type=float, default=1e-4)
     p.add_argument('--learning-starts', type=int, default=2_000)
     p.add_argument('--actor-delay', type=int, default=0,
@@ -167,6 +173,7 @@ def main():
     venv.save(os.path.join(args.save_dir, 'vecnormalize.pkl'))
 
     sr, ph, st = evaluate(None, base_actor, venv, args.scale, seeds)
+    clone_sr = sr
     print(f'clone alone eval success={sr:.2f} max_phase={ph:.2f} steps={st:.0f}', flush=True)
 
     rvenv = ResidualVecEnv(venv, base_actor, args.scale, args.res_penalty)
@@ -195,8 +202,9 @@ def main():
         sr, ph, st = evaluate(model, base_actor, venv, args.scale, seeds)
         print(f'clone + untrained residual eval success={sr:.2f} max_phase={ph:.2f} steps={st:.0f}', flush=True)
 
-    model.learn(max(args.steps - model.num_timesteps, 0), reset_num_timesteps=False, callback=EvalSave(base_actor, venv, args.scale, args.save_dir,
-                                              args.eval_every, seeds, args.actor_delay, args.actor_lr, args.actor_every))
+    cb = EvalSave(base_actor, venv, args.scale, args.save_dir, args.eval_every, seeds,
+                  args.actor_delay, args.actor_lr, args.actor_every, clone_sr=clone_sr)
+    model.learn(max(args.steps - model.num_timesteps, 0), reset_num_timesteps=False, callback=cb)
     model.save(os.path.join(args.save_dir, 'res_final'))
 
 
