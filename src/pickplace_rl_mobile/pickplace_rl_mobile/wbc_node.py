@@ -28,6 +28,7 @@ from tf2_msgs.msg import TFMessage
 from std_msgs.msg import String
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 
+from pickplace_rl_mobile.grasp_check import GraspTracker, cube_lifted, is_held
 from pickplace_rl_mobile.pickplace_env_mujoco import PickPlaceEnvMuJoCo
 from pickplace_rl_mobile.wbc_baseline import (
     WholeBodyController, _ACTION_TO_VEL, _ARM_DT, _ARM_MAX_VEL, _LIFT_Z)
@@ -70,6 +71,9 @@ class WbcNode(Node):
         self.object_pos = np.array(self.get_parameter('fallback_object_pos').value, dtype=float)
         self._start_object_pos = self.object_pos.copy()
         self._grasp_z = self.object_pos[2]
+        self.tracker = GraspTracker()
+        self._tracker_primed = False
+        self.tracker.reset(self.object_pos)
         self.use_perception = bool(self.get_parameter('use_perception').value)
         self.fixed_base = bool(self.get_parameter('fixed_base').value)
         self.gt_object = bool(self.get_parameter('gt_object').value)
@@ -199,9 +203,7 @@ class WbcNode(Node):
             f'dq={np.round((self.q if self._last_cmd is None else self._last_cmd) - self.q, 3).tolist()} pinch={np.round(pinch, 3).tolist()} cube={np.round(self.object_pos, 3).tolist()}',
             throttle_duration_sec=1.0)
         # closed with the pads level with the cube (closing high above it also reads as closed)
-        rel = self.object_pos - pinch
-        held = (self.grasp_finger < self.finger < self.grasp_finger_max
-                and np.linalg.norm(rel[:2]) < 0.03 and abs(rel[2]) < 0.025)
+        held = is_held(self.finger, self.object_pos, pinch, self.grasp_finger, self.grasp_finger_max)
         if self.phase in (1, 2):
             if self.finger >= self.grasp_finger_max:  # closed on air, try again
                 self.get_logger().info('grasp missed, retrying')
@@ -213,12 +215,13 @@ class WbcNode(Node):
             if self.closed_ticks >= self.hold_ticks:
                 self.phase = 3
                 self._grasp_z = self.object_pos[2]
+                self.tracker.mark_grasp(self.object_pos)
                 self.get_logger().info('phase 3: lift')
         elif self.phase == 3:
             if not held:  # dropped it, start over
                 self._restart_pick()
             elif pinch[2] >= _LIFT_Z - 0.03:
-                if self.object_pos[2] < self._grasp_z + 0.04:  # gripper rose, cube stayed behind
+                if not cube_lifted(self.object_pos[2], self._grasp_z):  # gripper rose, cube stayed behind
                     self.get_logger().info('cube not lifted, retrying')
                     self._restart_pick()
                     return
@@ -239,6 +242,9 @@ class WbcNode(Node):
         if not self.safety_ok or self.done:
             self._stop()
             return
+        if not self._tracker_primed:  # first real cube pose, not the fallback guess
+            self.tracker.reset(self.object_pos)
+            self._tracker_primed = True
         self._sync_shadow()
         self._update_phase()
         self.env.current_phase = self.phase
@@ -262,7 +268,10 @@ class WbcNode(Node):
         if self.phase == 5 and a[6] < 0 and self.finger < 0.1:
             self.done = True
             self._stop()
-            self.get_logger().info('place complete')
+            if self.tracker.placed(self.object_pos, self.target):
+                self.get_logger().info('place complete')
+            else:
+                self.get_logger().warn('place NOT confirmed by the cube pose (cube not at target)')
             return
         self._publish(a)
 
