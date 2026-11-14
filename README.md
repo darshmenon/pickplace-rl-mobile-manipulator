@@ -93,6 +93,19 @@ Demos come from 192 noisy episodes (145 succeed, 23k transitions). The MuJoCo en
 
 ---
 
+## DAgger on the Clone
+
+One DAgger pass on the clone (3 rounds, 32 rollouts each on fresh seeds, WBC relabelling, BC learning rate 2e-4, `bc_finetune.py --dagger-seed-start --dagger-lr`) removes the lift failures. The clone's failures were almost all at the lift phase (13 of 16 and 14 of 15); the DAgger policy has none, but fails more often at descend.
+
+| Held-out seeds | Clone | DAgger round 2 | Lift failures |
+|---|---|---|---|
+| 5000 to 5199 | 184/200 | 194/200 | 13 to 0 |
+| 6000 to 6199 | 185/200 | 191/200 | 14 to 0 |
+
+Overall success is within noise (sign test p about 0.05 and 0.29), since it breaks seeds the clone solved. Round 2 was picked after scoring two rounds on the first seed set; the second set was not used to choose. Rounds dip and recover (0.97, 0.67, 0.93 on 30 seeds), so every round is saved. Failure tables: `docs/failure_benchmark.md` (clone) and `docs/failure_benchmark_dagger.md`. The weights are in `rl_models/mujoco_dag2/tqc_dagger_2.zip`.
+
+---
+
 ## Residual RL on the Cloned Policy
 
 Plain, BC-anchored and uncapped residual online fine-tuning collapsed the policy in every run:
